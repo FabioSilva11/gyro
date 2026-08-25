@@ -94,6 +94,7 @@ data class ScreenZone(
     val height: Float = 0.58f,
     val boundaryMargin: Float = 0.04f,
     val autoRecenterThreshold: Float = 0.85f,
+    val mappedDisplayRotation: DisplayRotation? = null,
 )
 
 data class JoystickConfig(
@@ -154,6 +155,7 @@ data class ControlProfile(
     val gestureConfig: GestureConfig = GestureConfig(),
     val cameraZone: ScreenZone = ScreenZone(),
     val joystickConfig: JoystickConfig = JoystickConfig(),
+    val physicalMovement: PhysicalMovementConfig = PhysicalMovementConfig(),
     val overlayConfig: OverlayConfig = OverlayConfig(),
     val autoDetectConfig: AutoDetectConfig = AutoDetectConfig(),
 ) {
@@ -208,6 +210,7 @@ data class ControlProfile(
             sensitivity = joystickConfig.sensitivity.safe(0.01f, 50f, 1f),
             deadzone = joystickConfig.deadzone.safe(0f, 90f, 2f),
         ),
+        physicalMovement = physicalMovement.sanitized(),
         overlayConfig = overlayConfig.copy(
             opacity = overlayConfig.opacity.safe(0.1f, 1f, 0.88f),
             scale = overlayConfig.scale.safe(0.5f, 2f, 1f),
