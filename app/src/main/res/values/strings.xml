@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">GyroBridge</string>
+    <string name="accessibility_description">Converte movimentos do aparelho em gestos de toque somente durante uma sessão ativa. Não lê, armazena ou transmite o conteúdo da tela.</string>
+    <string name="notification_channel_name">Controle ativo</string>
+    <string name="notification_channel_description">Mantém o processamento de sensores do GyroBridge durante a sessão.</string>
+    <string name="overlay_status">GYRO  ●  ON</string>
+</resources>

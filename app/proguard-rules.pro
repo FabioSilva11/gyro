@@ -1,0 +1,3 @@
+-keep class com.gyrobridge.app.accessibility.GyroAccessibilityService { *; }
+-keep class com.gyrobridge.app.service.GyroForegroundService { *; }
+-keep class com.gyrobridge.app.overlay.OverlayService { *; }
