@@ -20,6 +20,7 @@ class MotionPipeline(profile: ControlProfile) {
     private var xFilter = MotionFilterFactory.create(this.profile.filterConfig.xFilter, this.profile.filterConfig)
     private var yFilter = MotionFilterFactory.create(this.profile.filterConfig.yFilter, this.profile.filterConfig)
     private var smoothX = 0f; private var smoothY = 0f
+    private var pendingDegreesX = 0f; private var pendingDegreesY = 0f
     private var lastTimestampNanos = 0L
 
     fun updateProfile(value: ControlProfile) {
@@ -31,8 +32,8 @@ class MotionPipeline(profile: ControlProfile) {
         val axis = profile.axisConfig; val sensitivity = profile.sensitivityConfig; val gesture = profile.gestureConfig
         var rawX = axisValue(axis.xSource, sample, sensitivity.deadzoneUnit); var rawY = axisValue(axis.ySource, sample, sensitivity.deadzoneUnit)
         if (axis.invertX) rawX = -rawX; if (axis.invertY) rawY = -rawY
-        val deadX = applyDeadzone(rawX, sensitivity.horizontalDeadzone)
-        val deadY = applyDeadzone(rawY, sensitivity.verticalDeadzone)
+        val deadX = if (sensitivity.deadzoneUnit == DeadzoneUnit.DEGREES) accumulateDegrees(rawX, sensitivity.horizontalDeadzone, true) else applyDeadzone(rawX, sensitivity.horizontalDeadzone)
+        val deadY = if (sensitivity.deadzoneUnit == DeadzoneUnit.DEGREES) accumulateDegrees(rawY, sensitivity.verticalDeadzone, false) else applyDeadzone(rawY, sensitivity.verticalDeadzone)
         val filteredX = xFilter.apply(deadX, sample.sensorTimestampNanos)
         val filteredY = yFilter.apply(deadY, sample.sensorTimestampNanos)
         val curvedX = response(filteredX, sensitivity.curve, sensitivity.gamma)
@@ -59,7 +60,17 @@ class MotionPipeline(profile: ControlProfile) {
         return MotionOutput(rawX, rawY, filteredX, filteredY, dx, dy, sample.sensorTimestampNanos, processed, (processed - sample.sensorTimestampNanos).coerceAtLeast(0L))
     }
 
-    fun reset() { xFilter.reset(); yFilter.reset(); smoothX = 0f; smoothY = 0f; lastTimestampNanos = 0L }
+    fun reset() { xFilter.reset(); yFilter.reset(); smoothX = 0f; smoothY = 0f; pendingDegreesX = 0f; pendingDegreesY = 0f; lastTimestampNanos = 0L }
+
+    private fun accumulateDegrees(value: Float, threshold: Float, horizontal: Boolean): Float {
+        var pending = if (horizontal) pendingDegreesX else pendingDegreesY
+        if (pending != 0f && value != 0f && sign(pending) != sign(value)) pending = 0f
+        pending += value
+        val output = if (abs(pending) + 0.000001f >= threshold.coerceAtLeast(0f)) pending else 0f
+        if (output != 0f) pending = 0f
+        if (horizontal) pendingDegreesX = pending else pendingDegreesY = pending
+        return output
+    }
 
     private fun axisValue(source: AxisSource, sample: OrientationSample, unit: DeadzoneUnit) = if (unit == DeadzoneUnit.DEGREES) when (source) {
         // YAW and PITCH are both inverted so that a rightward / upward tilt

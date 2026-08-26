@@ -13,7 +13,7 @@ class MotionPipelineTest {
         val base = ControlProfile(filterConfig=FilterConfig(xFilter=FilterType.NONE,yFilter=FilterType.NONE,smoothing=0f),sensitivityConfig=SensitivityConfig(horizontal=2f,vertical=2f,horizontalDeadzone=0f,verticalDeadzone=0f),gestureConfig=GestureConfig(maxPixelsPerSecond=100000f))
         val normal=MotionPipeline(base).process(sample()).dx
         val inverted=MotionPipeline(base.copy(axisConfig=base.axisConfig.copy(invertX=true))).process(sample()).dx
-        assertTrue(normal>0f);assertEquals(-normal,inverted,.001f)
+        assertTrue(normal<0f);assertEquals(-normal,inverted,.001f)
     }
     @Test fun `camera pitch uses touch camera direction`() {
         val profile = ControlProfile(
@@ -28,7 +28,34 @@ class MotionPipelineTest {
     }
     @Test fun `sensitivity and clamping are applied`() {
         val p=ControlProfile(filterConfig=FilterConfig(xFilter=FilterType.NONE,yFilter=FilterType.NONE,smoothing=0f),sensitivityConfig=SensitivityConfig(horizontal=50f,vertical=50f,horizontalDeadzone=0f,verticalDeadzone=0f),gestureConfig=GestureConfig(maxXPerUpdate=10f,maxYPerUpdate=12f,maxPixelsPerSecond=100000f))
-        val out=MotionPipeline(p).process(sample(10f,10f));assertEquals(10f,out.dx,.001f);assertEquals(-12f,out.dy,.001f)
+        val out=MotionPipeline(p).process(sample(10f,10f));assertEquals(-10f,out.dx,.001f);assertEquals(-12f,out.dy,.001f)
     }
     @Test fun `power curve preserves sign`() { assertEquals(-4f,MotionPipeline.response(-2f,ResponseCurve.POWER,2f),.001f) }
+
+    @Test fun `degree deadzone produces similar total at different sensor rates`() {
+        fun totalAt(hz: Int): Float {
+            val profile = ControlProfile(
+                filterConfig = FilterConfig(xFilter = FilterType.NONE, yFilter = FilterType.NONE, smoothing = 0f),
+                sensitivityConfig = SensitivityConfig(
+                    horizontal = 1f,
+                    vertical = 1f,
+                    horizontalDeadzone = .2f,
+                    verticalDeadzone = .2f,
+                    deadzoneUnit = DeadzoneUnit.DEGREES,
+                    pixelsPerDegree = 1f,
+                ),
+                gestureConfig = GestureConfig(maxPixelsPerSecond = 100_000f, maxXPerUpdate = 1_000f),
+            )
+            val pipeline = MotionPipeline(profile)
+            var total = 0f
+            repeat(hz) { index ->
+                total += pipeline.process(sample(yaw = 20f / hz, pitch = 0f, timestamp = 1_000_000_000L + index * (1_000_000_000L / hz))).dx
+            }
+            return total
+        }
+
+        val baseline = totalAt(100)
+        assertEquals(baseline, totalAt(50), kotlin.math.abs(baseline) * .10f)
+        assertEquals(baseline, totalAt(200), kotlin.math.abs(baseline) * .10f)
+    }
 }
