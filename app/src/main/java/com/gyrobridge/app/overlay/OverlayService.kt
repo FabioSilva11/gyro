@@ -20,6 +20,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.gyrobridge.app.core.AppGraph
 import com.gyrobridge.app.domain.model.ControlProfile
+import com.gyrobridge.app.domain.model.DisplayRotation
+import com.gyrobridge.app.domain.model.MovementZone
 import com.gyrobridge.app.domain.model.ScreenZone
 import com.gyrobridge.app.domain.model.sanitized
 import com.gyrobridge.app.service.GyroForegroundService
@@ -156,8 +158,9 @@ class OverlayService : Service() {
         removeOverlay()
         val mapper = MappingOverlayView(
             context = this,
-            initialZone = profile.cameraZone,
-            onSave = { zone -> saveMappedZone(profile, zone) },
+            initialCamera = profile.cameraZone,
+            initialMovement = profile.physicalMovement.zone,
+            onSave = { camera, movement -> saveMappedZones(profile, camera, movement) },
             onCancel = {
                 expanded = false
                 createOrReport()
@@ -175,8 +178,15 @@ class OverlayService : Service() {
         AppGraph.runtime.setOverlayStatus(true, "Mapeando região da câmera")
     }
 
-    private fun saveMappedZone(profile: ControlProfile, zone: ScreenZone) {
-        val updated = profile.copy(cameraZone = zone.sanitized())
+    @Suppress("DEPRECATION")
+    private fun saveMappedZones(profile: ControlProfile, camera: ScreenZone, movement: MovementZone) {
+        val rotation = DisplayRotation.fromSurface(windowManager.defaultDisplay.rotation)
+        val updated = profile.copy(
+            cameraZone = camera.copy(mappedDisplayRotation = rotation).sanitized(),
+            physicalMovement = profile.physicalMovement.copy(
+                zone = movement.copy(mappedDisplayRotation = rotation).sanitized(),
+            ),
+        )
         scope.launch {
             AppGraph.repository.save(updated)
             AppGraph.runtime.setProfile(updated)
@@ -270,13 +280,16 @@ class OverlayService : Service() {
 
 private class MappingOverlayView(
     context: Context,
-    initialZone: ScreenZone,
-    private val onSave: (ScreenZone) -> Unit,
+    initialCamera: ScreenZone,
+    initialMovement: MovementZone,
+    private val onSave: (ScreenZone, MovementZone) -> Unit,
     private val onCancel: () -> Unit,
 ) : View(context) {
     private val density = resources.displayMetrics.density
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private var zone = initialZone.sanitized()
+    private var cameraZone = initialCamera.sanitized()
+    private var movementZone = initialMovement.sanitized()
+    private var target = Target.CAMERA
     private var dragging = false
     private var dragOffsetX = 0f
     private var dragOffsetY = 0f
@@ -285,12 +298,12 @@ private class MappingOverlayView(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val rect = zoneRect()
+        val rect = cameraRect()
         paint.style = Paint.Style.FILL
         paint.color = Color.argb(34, 56, 189, 248)
         canvas.drawRoundRect(rect, 18f * density, 18f * density, paint)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 2f * density
+        paint.strokeWidth = (if (target == Target.CAMERA) 3f else 2f) * density
         paint.color = Color.rgb(56, 189, 248)
         canvas.drawRoundRect(rect, 18f * density, 18f * density, paint)
         paint.strokeWidth = 3f * density
@@ -307,20 +320,41 @@ private class MappingOverlayView(
         canvas.drawText("←", rect.left + 24f * density, rect.centerY() + 8f * density, paint)
         canvas.drawText("→", rect.right - 24f * density, rect.centerY() + 8f * density, paint)
 
+        val circle = movementCircle()
+        paint.style = Paint.Style.FILL
+        paint.color = Color.argb(38, 74, 222, 128)
+        canvas.drawCircle(circle.first, circle.second, circle.third, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = (if (target == Target.MOVEMENT) 3f else 2f) * density
+        paint.color = Color.rgb(74, 222, 128)
+        canvas.drawCircle(circle.first, circle.second, circle.third, paint)
+        canvas.drawLine(circle.first, circle.second - circle.third * .85f, circle.first, circle.second + circle.third * .85f, paint)
+        paint.style = Paint.Style.FILL
+        paint.textSize = 12f * density
+        paint.color = Color.WHITE
+        canvas.drawText("Frente", circle.first, circle.second - circle.third * .48f, paint)
+        canvas.drawText("Trás", circle.first, circle.second + circle.third * .62f, paint)
+
         drawToolbar(canvas)
     }
 
     private fun drawToolbar(canvas: Canvas) {
         val margin = 12f * density
         val height = 42f * density
-        val widths = listOf(110f, 54f, 54f, 78f).map { it * density }
+        val gap = 6f * density
+        val cellWidth = ((width - margin * 2f - gap * (Button.entries.size - 1)) / Button.entries.size).coerceAtLeast(42f * density)
         var left = margin
         buttons.clear()
         Button.entries.forEachIndexed { index, button ->
-            val rect = RectF(left, margin, left + widths[index], margin + height)
+            val rect = RectF(left, margin, left + cellWidth, margin + height)
             buttons[button] = rect
             paint.style = Paint.Style.FILL
-            paint.color = if (button == Button.SAVE) Color.argb(235, 29, 78, 216) else Color.argb(225, 10, 18, 32)
+            paint.color = when {
+                button == Button.SAVE -> Color.argb(235, 29, 78, 216)
+                button == Button.CAMERA && target == Target.CAMERA -> Color.argb(235, 3, 105, 161)
+                button == Button.MOVEMENT && target == Target.MOVEMENT -> Color.argb(235, 22, 101, 52)
+                else -> Color.argb(225, 10, 18, 32)
+            }
             canvas.drawRoundRect(rect, 12f * density, 12f * density, paint)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = density
@@ -332,34 +366,49 @@ private class MappingOverlayView(
             paint.textSize = 12f * density
             paint.color = Color.WHITE
             canvas.drawText(button.label, rect.centerX(), rect.centerY() + 4f * density, paint)
-            left = rect.right + 8f * density
+            left = rect.right + gap
         }
         paint.textAlign = Paint.Align.LEFT
         paint.typeface = Typeface.DEFAULT
         paint.textSize = 12f * density
         paint.color = Color.WHITE
-        canvas.drawText("Arraste a cruz para a área livre da câmera", margin, margin + height + 22f * density, paint)
+        canvas.drawText("Selecione CÂMERA ou MOV. e arraste a área", margin, margin + height + 22f * density, paint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 pressedButton = buttons.entries.firstOrNull { it.value.contains(event.x, event.y) }?.key
-                if (pressedButton == null && zoneRect().contains(event.x, event.y)) {
+                if (pressedButton == null) {
+                    val circle = movementCircle()
+                    val inMovement = kotlin.math.hypot((event.x-circle.first).toDouble(), (event.y-circle.second).toDouble()) <= circle.third
+                    if (inMovement) target = Target.MOVEMENT else if (cameraRect().contains(event.x, event.y)) target = Target.CAMERA
                     dragging = true
-                    dragOffsetX = event.x - zone.centerX * width
-                    dragOffsetY = event.y - zone.centerY * height
+                    val centerX = if (target == Target.CAMERA) cameraZone.centerX else movementZone.centerX
+                    val centerY = if (target == Target.CAMERA) cameraZone.centerY else movementZone.centerY
+                    dragOffsetX = event.x - centerX * width
+                    dragOffsetY = event.y - centerY * height
+                    invalidate()
                 }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (dragging && width > 0 && height > 0) {
-                    val halfW = zone.width / 2f
-                    val halfH = zone.height / 2f
-                    zone = zone.copy(
-                        centerX = ((event.x - dragOffsetX) / width).coerceIn(halfW, 1f - halfW),
-                        centerY = ((event.y - dragOffsetY) / height).coerceIn(halfH, 1f - halfH),
-                    ).sanitized()
+                    if (target == Target.CAMERA) {
+                        val halfW = cameraZone.width / 2f
+                        val halfH = cameraZone.height / 2f
+                        cameraZone = cameraZone.copy(
+                            centerX = ((event.x - dragOffsetX) / width).coerceIn(halfW, 1f - halfW),
+                            centerY = ((event.y - dragOffsetY) / height).coerceIn(halfH, 1f - halfH),
+                        ).sanitized()
+                    } else {
+                        val nxRadius = movementZone.radius * minOf(width, height) / width
+                        val nyRadius = movementZone.radius * minOf(width, height) / height
+                        movementZone = movementZone.copy(
+                            centerX = ((event.x - dragOffsetX) / width).coerceIn(nxRadius, 1f - nxRadius),
+                            centerY = ((event.y - dragOffsetY) / height).coerceIn(nyRadius, 1f - nyRadius),
+                        ).sanitized()
+                    }
                     invalidate()
                 }
                 return true
@@ -382,36 +431,52 @@ private class MappingOverlayView(
 
     private fun perform(button: Button) {
         when (button) {
+            Button.CAMERA -> { target = Target.CAMERA; invalidate() }
+            Button.MOVEMENT -> { target = Target.MOVEMENT; invalidate() }
             Button.CANCEL -> onCancel()
             Button.SMALLER -> resize(-.05f)
             Button.LARGER -> resize(.05f)
-            Button.SAVE -> onSave(zone.sanitized())
+            Button.SAVE -> onSave(cameraZone.sanitized(), movementZone.sanitized())
         }
     }
 
     private fun resize(delta: Float) {
-        zone = zone.copy(
-            width = (zone.width + delta).coerceIn(.10f, .90f),
-            height = (zone.height + delta).coerceIn(.10f, .90f),
-        ).sanitized()
-        val halfW = zone.width / 2f
-        val halfH = zone.height / 2f
-        zone = zone.copy(
-            centerX = zone.centerX.coerceIn(halfW, 1f - halfW),
-            centerY = zone.centerY.coerceIn(halfH, 1f - halfH),
-        )
+        if (target == Target.CAMERA) {
+            cameraZone = cameraZone.copy(
+                width = (cameraZone.width + delta).coerceIn(.10f, .90f),
+                height = (cameraZone.height + delta).coerceIn(.10f, .90f),
+            ).sanitized()
+            val halfW = cameraZone.width / 2f
+            val halfH = cameraZone.height / 2f
+            cameraZone = cameraZone.copy(
+                centerX = cameraZone.centerX.coerceIn(halfW, 1f - halfW),
+                centerY = cameraZone.centerY.coerceIn(halfH, 1f - halfH),
+            )
+        } else {
+            movementZone = movementZone.copy(radius = (movementZone.radius + delta / 2f).coerceIn(.03f, .40f)).sanitized()
+        }
         invalidate()
     }
 
-    private fun zoneRect(): RectF {
-        val centerX = zone.centerX * width
-        val centerY = zone.centerY * height
-        val halfW = zone.width * width / 2f
-        val halfH = zone.height * height / 2f
+    private fun cameraRect(): RectF {
+        val centerX = cameraZone.centerX * width
+        val centerY = cameraZone.centerY * height
+        val halfW = cameraZone.width * width / 2f
+        val halfH = cameraZone.height * height / 2f
         return RectF(centerX - halfW, centerY - halfH, centerX + halfW, centerY + halfH)
     }
 
+    private fun movementCircle(): Triple<Float, Float, Float> = Triple(
+        movementZone.centerX * width,
+        movementZone.centerY * height,
+        movementZone.radius * minOf(width, height),
+    )
+
+    private enum class Target { CAMERA, MOVEMENT }
+
     private enum class Button(val label: String) {
+        CAMERA("CÂMERA"),
+        MOVEMENT("MOV."),
         CANCEL("CANCELAR"),
         SMALLER("−"),
         LARGER("+"),

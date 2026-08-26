@@ -107,10 +107,12 @@ private enum class Route(val label: String) {
     val orientation by vm.runtime.orientation.collectAsStateWithLifecycle(); val sensor by vm.runtime.sensorInfo.collectAsStateWithLifecycle()
     val overlay by vm.runtime.overlayStatus.collectAsStateWithLifecycle()
     val a11yOk by vm.runtime.a11yAvailable.collectAsStateWithLifecycle()
+    val sessionStatus by vm.runtime.sessionStatus.collectAsStateWithLifecycle()
+    val movementState by vm.runtime.physicalMovementState.collectAsStateWithLifecycle()
     val context = LocalContext.current; val lifecycleOwner = LocalLifecycleOwner.current; var a11yRefresh by remember { mutableIntStateOf(0) }
     DisposableEffect(lifecycleOwner) { val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) a11yRefresh++ }; lifecycleOwner.lifecycle.addObserver(observer); onDispose { lifecycleOwner.lifecycle.removeObserver(observer) } }
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { StatusCard(active, paused, current?.name, sensor.name, overlay.visible, overlay.message, active && !a11yOk) }
+        item { StatusCard(active, paused, current?.name, sensor.name, overlay.visible, overlay.message, sessionStatus, movementState, active && !a11yOk) }
         item {
             Card { Column(Modifier.padding(16.dp)) {
                 Text("Orientação ao vivo", style = MaterialTheme.typography.titleMedium); Spacer(Modifier.height(12.dp))
@@ -134,11 +136,21 @@ private enum class Route(val label: String) {
     }
 }
 
-@Composable private fun StatusCard(active: Boolean, paused: Boolean, profile: String?, sensor: String, overlayVisible: Boolean, overlayMessage: String?, a11yMissing: Boolean = false) {
-    val color = when { a11yMissing -> MaterialTheme.colorScheme.error; paused -> MaterialTheme.colorScheme.tertiary; active -> Color(0xFF22C55E); else -> MaterialTheme.colorScheme.outline }
+@Composable private fun StatusCard(active: Boolean, paused: Boolean, profile: String?, sensor: String, overlayVisible: Boolean, overlayMessage: String?, sessionStatus: SessionStatus, movementState: PhysicalMovementState, a11yMissing: Boolean = false) {
+    val color = when { sessionStatus == SessionStatus.ERROR || a11yMissing -> MaterialTheme.colorScheme.error; paused -> MaterialTheme.colorScheme.tertiary; active -> Color(0xFF22C55E); else -> MaterialTheme.colorScheme.outline }
+    val statusLabel = when (sessionStatus) {
+        SessionStatus.STOPPED -> "Gyro desligado"
+        SessionStatus.PAUSED -> "Gyro pronto — toque em iniciar"
+        SessionStatus.WAITING_ACCESSIBILITY -> "Aguardando acessibilidade"
+        SessionStatus.WAITING_SENSOR -> "Aguardando sensor"
+        SessionStatus.CALIBRATING -> "Calibrando — mantenha o aparelho parado"
+        SessionStatus.ACTIVE -> "Gyro funcionando"
+        SessionStatus.ERROR -> "Sensor indisponível"
+    }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) { Column(Modifier.padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(12.dp).background(color, CircleShape)); Spacer(Modifier.width(8.dp)); Text(if (a11yMissing) "Gyro ativo — Acessibilidade OFF" else if (paused) "Gyro pausado" else if (active) "Gyro funcionando" else "Gyro desligado", fontWeight = FontWeight.Bold) }
+        Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(12.dp).background(color, CircleShape)); Spacer(Modifier.width(8.dp)); Text(statusLabel, fontWeight = FontWeight.Bold) }
         Spacer(Modifier.height(12.dp)); Text("Perfil: ${profile ?: "Nenhum perfil"}"); Text("Sensor: $sensor", style = MaterialTheme.typography.bodySmall)
+        if (movementState != PhysicalMovementState.STATIONARY) Text("Movimento ativo: ${if (movementState == PhysicalMovementState.FORWARD) "Frente" else "Trás"}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF16A34A))
         if (a11yMissing) Text("Ative o AccessibilityService para enviar gestos", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         if (active) Text("Overlay: ${if (overlayVisible) "visível" else overlayMessage ?: "iniciando"}", style = MaterialTheme.typography.bodySmall, color = if (overlayVisible) Color(0xFF16A34A) else MaterialTheme.colorScheme.error)
     } }
@@ -177,6 +189,17 @@ private enum class Route(val label: String) {
         item { PrecisionSlider("Deadzone vertical (°)", profile.sensitivityConfig.verticalDeadzone, 0f..5f) { v -> vm.updateEditing { p -> p.copy(sensitivityConfig = p.sensitivityConfig.copy(verticalDeadzone = v)) } } }
         item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { FilterChip(selected = profile.axisConfig.invertX, onClick = { vm.updateEditing { p -> p.copy(axisConfig = p.axisConfig.copy(invertX = !p.axisConfig.invertX)) } }, label = { Text("Inverter X") }); FilterChip(selected = profile.axisConfig.invertY, onClick = { vm.updateEditing { p -> p.copy(axisConfig = p.axisConfig.copy(invertY = !p.axisConfig.invertY)) } }, label = { Text("Inverter Y") }) } }
         item { NavigationCard("Região da câmera", "${(profile.cameraZone.centerX*100).roundToInt()}% × ${(profile.cameraZone.centerY*100).roundToInt()}%") { onMapper() } }
+        item { SectionTitle("MOVIMENTO FÍSICO") }
+        item { SettingSwitch("Movimento físico", "Mantém um segundo toque no joystick enquanto você anda", profile.physicalMovement.enabled) { v -> vm.updateEditing { p -> p.copy(physicalMovement = p.physicalMovement.copy(enabled = v)) } } }
+        if (profile.physicalMovement.enabled) {
+            item { SettingSwitch("Frente", null, profile.physicalMovement.forwardEnabled) { v -> vm.updateEditing { p -> p.copy(physicalMovement = p.physicalMovement.copy(forwardEnabled = v)) } } }
+            item { SettingSwitch("Trás", null, profile.physicalMovement.backwardEnabled) { v -> vm.updateEditing { p -> p.copy(physicalMovement = p.physicalMovement.copy(backwardEnabled = v)) } } }
+            item { PrecisionSlider("Limiar do passo", profile.physicalMovement.threshold, .05f..3f) { v -> vm.updateEditing { p -> p.copy(physicalMovement = p.physicalMovement.copy(threshold = v)) } } }
+            item { PrecisionSlider("Sensibilidade do movimento", profile.physicalMovement.sensitivity, .1f..4f) { v -> vm.updateEditing { p -> p.copy(physicalMovement = p.physicalMovement.copy(sensitivity = v)) } } }
+            item { PrecisionSlider("Tempo para parar (ms)", profile.physicalMovement.stopTimeoutMs.toFloat(), 100f..1500f, 0) { v -> vm.updateEditing { p -> p.copy(physicalMovement = p.physicalMovement.copy(stopTimeoutMs = v.roundToInt().toLong())) } } }
+            item { PrecisionSlider("Força do joystick", profile.physicalMovement.joystickStrength * 100f, 10f..100f, 0) { v -> vm.updateEditing { p -> p.copy(physicalMovement = p.physicalMovement.copy(joystickStrength = v / 100f)) } } }
+            item { NavigationCard("Área de movimento", "${(profile.physicalMovement.zone.centerX*100).roundToInt()}% × ${(profile.physicalMovement.zone.centerY*100).roundToInt()}%") { onMapper() } }
+        }
         item { SectionTitle("FILTRAGEM") }
         item { ChoiceChips(FilterType.entries, profile.filterConfig.xFilter, { it.name.replace('_',' ') }) { v -> vm.updateEditing { p -> p.copy(filterConfig = p.filterConfig.copy(xFilter = v, yFilter = v)) } } }
         item { PrecisionSlider("Suavização", profile.filterConfig.smoothing * 100f, 0f..100f) { v -> vm.updateEditing { p -> p.copy(filterConfig = p.filterConfig.copy(smoothing = v/100f)) } }; if (profile.filterConfig.smoothing > .75f) Text("Suavização alta aumenta a latência.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
@@ -184,10 +207,7 @@ private enum class Route(val label: String) {
         item { ChoiceChips(listOf(SensorRate.AUTOMATIC,SensorRate.GAME,SensorRate.FASTEST,SensorRate.CUSTOM),profile.sensorConfig.rate,{it.name}) { v -> vm.updateEditing { p -> p.copy(sensorConfig=p.sensorConfig.copy(rate=v)) } } }
         if(profile.sensorConfig.rate==SensorRate.CUSTOM) item { PrecisionSlider("Taxa solicitada (Hz)",profile.sensorConfig.customHz.toFloat(),50f..400f,0) { v -> vm.updateEditing { p -> p.copy(sensorConfig=p.sensorConfig.copy(customHz=v.roundToInt())) } } }
         item { SectionTitle("GESTOS") }
-        item { ChoiceChips(GestureMode.entries, profile.gestureConfig.mode, { if (it == GestureMode.SEGMENTED) "Segmentado" else "Contínuo" }) { v -> vm.updateEditing { p -> p.copy(gestureConfig = p.gestureConfig.copy(mode = v)) } } }
-        item { ChoiceChips(InteractionMode.entries,profile.gestureConfig.interactionMode,{it.name.replace('_',' ')}) { v -> vm.updateEditing { p -> p.copy(gestureConfig=p.gestureConfig.copy(interactionMode=v)) } }; if(profile.gestureConfig.interactionMode!=InteractionMode.GYRO_ONLY) Text("Experimental: gestos sintéticos podem cancelar toques humanos.",color=MaterialTheme.colorScheme.tertiary,style=MaterialTheme.typography.bodySmall) }
         item { PrecisionSlider("Gestos por segundo", profile.gestureConfig.targetRate.toFloat(), 15f..120f, decimals = 0) { v -> vm.updateEditing { p -> p.copy(gestureConfig = p.gestureConfig.copy(targetRate = v.roundToInt())) } } }
-        item { SettingSwitch("Joystick sintético", "Composto com a câmera no mesmo GestureDescription", profile.joystickConfig.enabled) { v -> vm.updateEditing { p -> p.copy(joystickConfig = p.joystickConfig.copy(enabled = v)) } } }
         item { SectionTitle("OVERLAY") }
         item { SettingSwitch("Mostrar overlay", "Requer permissão sobre outros apps", profile.overlayConfig.enabled) { v -> vm.updateEditing { p -> p.copy(overlayConfig = p.overlayConfig.copy(enabled = v)) } } }
         item { TextButton(onClick = { advanced = !advanced }) { Icon(if (advanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null); Text(" Opções avançadas") } }
@@ -235,24 +255,53 @@ private enum class Route(val label: String) {
     }
 }
 
+private enum class MappingTarget { CAMERA, MOVEMENT }
+
 @Composable private fun MapperScreen(vm: AppViewModel, profile: ControlProfile) {
-    val zone = profile.cameraZone
+    val cameraZone = profile.cameraZone
+    val movementZone = profile.physicalMovement.zone
+    val context = LocalContext.current
+    @Suppress("DEPRECATION")
+    val currentRotation = DisplayRotation.fromSurface((context as? Activity)?.windowManager?.defaultDisplay?.rotation ?: android.view.Surface.ROTATION_0)
+    var target by rememberSaveable { mutableStateOf(MappingTarget.CAMERA) }
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Arraste o ponto central. As coordenadas são salvas normalizadas e continuam válidas em outras resoluções.", style = MaterialTheme.typography.bodyMedium)
+        Text("Escolha uma área e arraste seu centro. Azul controla a câmera; verde mantém o toque do joystick.", style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = target == MappingTarget.CAMERA, onClick = { target = MappingTarget.CAMERA }, label = { Text("Área da câmera") })
+            FilterChip(selected = target == MappingTarget.MOVEMENT, onClick = { target = MappingTarget.MOVEMENT }, label = { Text("Área de movimento") })
+        }
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f).background(Color(0xFF07101E), RoundedCornerShape(18.dp)).border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(18.dp))) {
-            val density = androidx.compose.ui.platform.LocalDensity.current
-            val widthPx = with(density) { maxWidth.toPx() }; val heightPx = with(density) { maxHeight.toPx() }
-            Canvas(Modifier.fillMaxSize().pointerInput(profile.id) { detectDragGestures { change, _ -> change.consume(); val x = (change.position.x / size.width).coerceIn(0f,1f); val y = (change.position.y / size.height).coerceIn(0f,1f); vm.updateEditing { p -> p.copy(cameraZone = p.cameraZone.copy(centerX = x, centerY = y)) } } }) {
-                val left = (zone.centerX-zone.width/2f)*size.width; val top = (zone.centerY-zone.height/2f)*size.height
-                drawRoundRect(Color(0x3322D3EE), Offset(left, top), Size(zone.width*size.width, zone.height*size.height), cornerRadius = androidx.compose.ui.geometry.CornerRadius(18f), style = androidx.compose.ui.graphics.drawscope.Fill)
-                drawRoundRect(Color(0xFF38BDF8), Offset(left, top), Size(zone.width*size.width, zone.height*size.height), cornerRadius = androidx.compose.ui.geometry.CornerRadius(18f), style = Stroke(3f))
-                drawCircle(Color.White, 12f, Offset(zone.centerX*size.width, zone.centerY*size.height)); drawCircle(Color(0xFF38BDF8), 6f, Offset(zone.centerX*size.width, zone.centerY*size.height))
+            Canvas(Modifier.fillMaxSize().pointerInput(profile.id, target) { detectDragGestures { change, _ ->
+                change.consume()
+                val x = (change.position.x / size.width).coerceIn(0f,1f)
+                val y = (change.position.y / size.height).coerceIn(0f,1f)
+                vm.updateEditing { p ->
+                    if (target == MappingTarget.CAMERA) p.copy(cameraZone = p.cameraZone.copy(centerX = x, centerY = y, mappedDisplayRotation = currentRotation))
+                    else p.copy(physicalMovement = p.physicalMovement.copy(zone = p.physicalMovement.zone.copy(centerX = x, centerY = y, mappedDisplayRotation = currentRotation)))
+                }
+            } }) {
+                val left = (cameraZone.centerX-cameraZone.width/2f)*size.width; val top = (cameraZone.centerY-cameraZone.height/2f)*size.height
+                drawRoundRect(Color(0x3322D3EE), Offset(left, top), Size(cameraZone.width*size.width, cameraZone.height*size.height), cornerRadius = androidx.compose.ui.geometry.CornerRadius(18f), style = androidx.compose.ui.graphics.drawscope.Fill)
+                drawRoundRect(Color(0xFF38BDF8), Offset(left, top), Size(cameraZone.width*size.width, cameraZone.height*size.height), cornerRadius = androidx.compose.ui.geometry.CornerRadius(18f), style = Stroke(if (target == MappingTarget.CAMERA) 5f else 3f))
+                drawLine(Color(0xFF38BDF8), Offset(left, cameraZone.centerY*size.height), Offset(left+cameraZone.width*size.width, cameraZone.centerY*size.height), strokeWidth = 2f)
+                drawLine(Color(0xFF38BDF8), Offset(cameraZone.centerX*size.width, top), Offset(cameraZone.centerX*size.width, top+cameraZone.height*size.height), strokeWidth = 2f)
+                val movementCenter = Offset(movementZone.centerX*size.width, movementZone.centerY*size.height)
+                val movementRadius = movementZone.radius * minOf(size.width, size.height)
+                drawCircle(Color(0x3334D399), movementRadius, movementCenter)
+                drawCircle(Color(0xFF4ADE80), movementRadius, movementCenter, style = Stroke(if (target == MappingTarget.MOVEMENT) 5f else 3f))
+                drawLine(Color(0xFF4ADE80), Offset(movementCenter.x, movementCenter.y-movementRadius*.85f), Offset(movementCenter.x, movementCenter.y+movementRadius*.85f), strokeWidth = 3f)
+                drawCircle(Color.White, 10f, if (target == MappingTarget.CAMERA) Offset(cameraZone.centerX*size.width, cameraZone.centerY*size.height) else movementCenter)
             }
         }
-        Text("Centro X ${(zone.centerX*100).roundToInt()}%   Y ${(zone.centerY*100).roundToInt()}%")
-        PrecisionSlider("Largura da área", zone.width*100f, 5f..100f, 0) { v -> vm.updateEditing { it.copy(cameraZone = it.cameraZone.copy(width = v/100f)) } }
-        PrecisionSlider("Altura da área", zone.height*100f, 5f..100f, 0) { v -> vm.updateEditing { it.copy(cameraZone = it.cameraZone.copy(height = v/100f)) } }
-        Button(onClick = { vm.saveEditing() }, modifier = Modifier.fillMaxWidth()) { Text("SALVAR REGIÃO") }
+        if (target == MappingTarget.CAMERA) {
+            Text("Câmera X ${(cameraZone.centerX*100).roundToInt()}%   Y ${(cameraZone.centerY*100).roundToInt()}%")
+            PrecisionSlider("Largura da área", cameraZone.width*100f, 5f..100f, 0) { v -> vm.updateEditing { it.copy(cameraZone = it.cameraZone.copy(width = v/100f, mappedDisplayRotation = currentRotation)) } }
+            PrecisionSlider("Altura da área", cameraZone.height*100f, 5f..100f, 0) { v -> vm.updateEditing { it.copy(cameraZone = it.cameraZone.copy(height = v/100f, mappedDisplayRotation = currentRotation)) } }
+        } else {
+            Text("Movimento X ${(movementZone.centerX*100).roundToInt()}%   Y ${(movementZone.centerY*100).roundToInt()}%")
+            PrecisionSlider("Raio da área", movementZone.radius*100f, 3f..40f, 0) { v -> vm.updateEditing { p -> p.copy(physicalMovement = p.physicalMovement.copy(zone = p.physicalMovement.zone.copy(radius = v/100f, mappedDisplayRotation = currentRotation))) } }
+        }
+        Button(onClick = { vm.saveEditing() }, modifier = Modifier.fillMaxWidth()) { Text("SALVAR ÁREAS") }
     }
 }
 
