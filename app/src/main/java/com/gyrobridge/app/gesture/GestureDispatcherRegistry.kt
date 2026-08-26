@@ -2,6 +2,7 @@ package com.gyrobridge.app.gesture
 
 import android.util.Log
 import com.gyrobridge.app.domain.model.ControlProfile
+import com.gyrobridge.app.domain.model.PhysicalMovementState
 import com.gyrobridge.app.sensor.OrientationSample
 
 private const val TAG = "GB_GestReg"
@@ -50,6 +51,12 @@ object GestureDispatcherRegistry {
             return false
         }
         s.enqueue(GestureRequest(dx, dy, queuedAt), orientation)
+        return true
+    }
+
+    fun updateMovement(state: PhysicalMovementState): Boolean {
+        val current = scheduler ?: return false
+        current.updateMovement(state)
         return true
     }
 

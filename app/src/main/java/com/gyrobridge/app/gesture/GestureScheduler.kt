@@ -13,7 +13,8 @@ import android.view.WindowManager
 import com.gyrobridge.app.core.AppGraph
 import com.gyrobridge.app.domain.mapper.ScreenCoordinateMapper
 import com.gyrobridge.app.domain.model.ControlProfile
-import com.gyrobridge.app.domain.model.GestureMode
+import com.gyrobridge.app.domain.model.DisplayRotation
+import com.gyrobridge.app.domain.model.PhysicalMovementState
 import com.gyrobridge.app.sensor.OrientationSample
 import java.util.ArrayDeque
 import kotlin.math.hypot
@@ -26,13 +27,19 @@ class GestureScheduler(private val service: AccessibilityService) {
     private var dispatching = false; private var stopped = false; private var virtualX = 0f; private var virtualY = 0f
     private var lastDispatchStartedUptimeMs = 0L
     private var continuedStroke: GestureDescription.StrokeDescription? = null
+    private var continuedMovementStroke: GestureDescription.StrokeDescription? = null
+    private var movementState = PhysicalMovementState.STATIONARY
+    private var movementDirty = false
+    private var generation = 0L
     private var lastDisplayWidth = 0; private var lastDisplayHeight = 0
-    private var latestOrientation = OrientationSample(); private var metrics = GestureMetrics(); private var lastCompletedNanos = 0L
+    private var metrics = GestureMetrics(); private var lastCompletedNanos = 0L
     private val latencies = ArrayDeque<Float>(256); private var totalDurationMs = 0.0
 
     fun configure(profile: ControlProfile) {
+        generation++
+        continuedStroke = null; continuedMovementStroke = null; dispatching = false
         this.profile = profile.sanitized(); accumulator = GestureAccumulator(this.profile.gestureConfig.maxSwipeDistance)
-        val (w, h) = displaySize(); val zone = ScreenCoordinateMapper.toPixels(this.profile.cameraZone, w, h)
+        val (w, h) = displaySize(); val zone = ScreenCoordinateMapper.cameraToPixels(this.profile.cameraZone, w, h, displayRotation())
         lastDisplayWidth = w; lastDisplayHeight = h; virtualX = zone.centerX; virtualY = zone.centerY
         lastDispatchStartedUptimeMs = 0L
         Log.i(TAG, "Configured: profile=${profile.name} enabled=${profile.enabled} zone=center(${zone.centerX.toInt()},${zone.centerY.toInt()}) size=${w}x${h}")
@@ -42,15 +49,26 @@ class GestureScheduler(private val service: AccessibilityService) {
         if (stopped) { Log.d(TAG, "Enqueue: stopped, skipping"); return }
         if (!profile.enabled) { Log.d(TAG, "Enqueue: profile disabled, skipping"); return }
         if (!request.dx.isFinite() || !request.dy.isFinite()) return
-        latestOrientation = orientation; accumulator.add(request)
+        accumulator.add(request)
         handler.removeCallbacks(endContinuousRunnable)
         metrics = metrics.copy(state = GestureState.QUEUED, queued = metrics.queued + 1); publish()
         scheduleNext()
     }
 
+    fun updateMovement(state: PhysicalMovementState) {
+        if (movementState == state || stopped || !profile.physicalMovement.enabled) return
+        movementState = state
+        movementDirty = true
+        metrics = metrics.copy(state = GestureState.QUEUED, queued = metrics.queued + 1)
+        publish()
+        scheduleNext()
+    }
+
     fun cancelAll() {
         Log.d(TAG, "cancelAll")
-        stopped = true; accumulator.clear(); handler.removeCallbacksAndMessages(null); dispatching = false; continuedStroke = null
+        generation++
+        stopped = true; accumulator.clear(); handler.removeCallbacksAndMessages(null); dispatching = false; continuedStroke = null; continuedMovementStroke = null
+        movementState = PhysicalMovementState.STATIONARY; movementDirty = false
         lastDispatchStartedUptimeMs = 0L
         metrics = metrics.copy(state = GestureState.CANCELLED); publish()
     }
@@ -71,7 +89,9 @@ class GestureScheduler(private val service: AccessibilityService) {
 
     private val dispatchRunnable = Runnable {
         if (dispatching || stopped) return@Runnable
-        val request = accumulator.take(MIN_GESTURE_DISTANCE_PX) ?: run {
+        val request = accumulator.take(MIN_GESTURE_DISTANCE_PX) ?: if (movementDirty || continuedMovementStroke != null) {
+            GestureRequest(0f, 0f)
+        } else run {
             metrics = metrics.copy(state = GestureState.IDLE); publish()
             if (continuedStroke != null) {
                 handler.removeCallbacks(endContinuousRunnable)
@@ -88,55 +108,87 @@ class GestureScheduler(private val service: AccessibilityService) {
 
     private fun dispatch(request: GestureRequest) {
         handler.removeCallbacks(endContinuousRunnable)
-        val (width, height) = displaySize(); val zone = ScreenCoordinateMapper.toPixels(profile.cameraZone, width, height)
+        val (width, height) = displaySize(); val zone = ScreenCoordinateMapper.cameraToPixels(profile.cameraZone, width, height, displayRotation())
         if (width != lastDisplayWidth || height != lastDisplayHeight) {
-            continuedStroke = null
+            continuedStroke = null; continuedMovementStroke = null
             virtualX = zone.centerX; virtualY = zone.centerY
             lastDisplayWidth = width; lastDisplayHeight = height
         }
         if (virtualX == 0f && virtualY == 0f) { virtualX = zone.centerX; virtualY = zone.centerY }
         val startX = virtualX.coerceIn(zone.left, zone.right); val startY = virtualY.coerceIn(zone.top, zone.bottom)
         val endX = (startX + request.dx).coerceIn(zone.left, zone.right); val endY = (startY + request.dy).coerceIn(zone.top, zone.bottom)
-        if (hypot((endX - startX).toDouble(), (endY - startY).toDouble()) < .5) { scheduleNext(); return }
+        val hasCameraMovement = hypot((endX - startX).toDouble(), (endY - startY).toDouble()) >= .5
+        val hasMovementWork = movementDirty || continuedMovementStroke != null
+        if (!hasCameraMovement && !hasMovementWork) { scheduleNext(); return }
         virtualX = endX; virtualY = endY
         val reachedBoundary = nearBoundary(endX, endY, zone)
         dispatching = true; metrics = metrics.copy(state = GestureState.DISPATCHING, sent = metrics.sent + 1); publish()
         lastDispatchStartedUptimeMs = SystemClock.uptimeMillis()
         val started = System.nanoTime(); val duration = profile.gestureConfig.durationMs
-        if (profile.gestureConfig.mode == GestureMode.CONTINUOUS) {
-            val path = Path().apply { moveTo(startX, startY); lineTo(endX, endY) }
-            val willContinue = !reachedBoundary
-            val stroke = continuedStroke?.let { previous ->
-                runCatching { previous.continueStroke(path, 0, duration, willContinue) }.getOrNull()
-            } ?: GestureDescription.StrokeDescription(path, 0, duration, willContinue)
+        run {
+            val dispatchGeneration = generation
+            val willContinue = hasCameraMovement && !reachedBoundary
+            val stroke = if (hasCameraMovement) {
+                val path = Path().apply { moveTo(startX, startY); lineTo(endX, endY) }
+                continuedStroke?.let { previous -> runCatching { previous.continueStroke(path, 0, duration, willContinue) }.getOrNull() }
+                    ?: GestureDescription.StrokeDescription(path, 0, duration, willContinue)
+            } else continuedStroke?.let { previous ->
+                runCatching { previous.continueStroke(Path().apply { moveTo(startX, startY) }, 0, duration, false) }.getOrNull()
+            }
+            val movementResult = movementStroke(width, height, duration)
+            val builder = GestureDescription.Builder()
+            stroke?.let(builder::addStroke)
+            movementResult.stroke?.let(builder::addStroke)
+            movementDirty = false
             val accepted = service.dispatchGesture(
-                GestureDescription.Builder().addStroke(stroke).build(),
+                builder.build(),
                 object : AccessibilityService.GestureResultCallback() {
                     override fun onCompleted(gestureDescription: GestureDescription) {
+                        if (dispatchGeneration != generation) return
                         continuedStroke = if (willContinue) stroke else null
+                        continuedMovementStroke = if (movementResult.willContinue) movementResult.stroke else null
                         if (reachedBoundary) { virtualX = zone.centerX; virtualY = zone.centerY }
                         finish(true, started, request)
                     }
                     override fun onCancelled(gestureDescription: GestureDescription) {
-                        continuedStroke = null
+                        if (dispatchGeneration != generation) return
+                        continuedStroke = null; continuedMovementStroke = null
                         finish(false, started, request)
                     }
                 },
                 handler,
             )
-            if (!accepted) { continuedStroke = null; finish(false, started, request) }
-        } else {
-            if (reachedBoundary) { virtualX = zone.centerX; virtualY = zone.centerY }
-            val builder = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(startX, startY); lineTo(endX, endY) }, 0, duration))
-            val joystick = MultiTouchGestureComposer.joystickStroke(profile, latestOrientation, width, height, duration)
-            if (joystick != null) runCatching { builder.addStroke(joystick) }.onFailure { metrics = metrics.copy(multitouchAvailable = false) }
-            if (!service.dispatchGesture(builder.build(), callback(started, request), handler)) finish(false, started, request)
+            if (!accepted && dispatchGeneration == generation) { continuedStroke = null; continuedMovementStroke = null; finish(false, started, request) }
         }
     }
 
-    private fun callback(started: Long, request: GestureRequest) = object : AccessibilityService.GestureResultCallback() {
-        override fun onCompleted(gestureDescription: GestureDescription) = finish(true, started, request)
-        override fun onCancelled(gestureDescription: GestureDescription) = finish(false, started, request)
+    private data class MovementStrokeResult(
+        val stroke: GestureDescription.StrokeDescription?,
+        val willContinue: Boolean,
+    )
+
+    private fun movementStroke(width: Int, height: Int, duration: Long): MovementStrokeResult {
+        val previous = continuedMovementStroke
+        val config = profile.physicalMovement
+        if (!config.enabled) return MovementStrokeResult(null, false)
+        val rotation = displayRotation()
+        val zone = ScreenCoordinateMapper.movementToPixels(config.zone, width, height, rotation)
+        if (movementState == PhysicalMovementState.STATIONARY) {
+            if (previous == null) return MovementStrokeResult(null, false)
+            val end = runCatching {
+                previous.continueStroke(Path().apply { moveTo(zone.centerX, zone.centerY) }, 0, duration, false)
+            }.getOrNull()
+            return MovementStrokeResult(end, false)
+        }
+        val direction = if (movementState == PhysicalMovementState.FORWARD) -1f else 1f
+        val targetY = zone.centerY + direction * zone.radiusPx * config.joystickStrength
+        val path = Path().apply {
+            if (previous == null) moveTo(zone.centerX, zone.centerY) else moveTo(zone.centerX, targetY)
+            lineTo(zone.centerX, targetY)
+        }
+        val stroke = previous?.let { runCatching { it.continueStroke(path, 0, duration, true) }.getOrNull() }
+            ?: GestureDescription.StrokeDescription(path, 0, duration, true)
+        return MovementStrokeResult(stroke, true)
     }
 
     private fun finishContinuousStroke() {
@@ -199,6 +251,14 @@ class GestureScheduler(private val service: AccessibilityService) {
         val bounds = service.getSystemService(WindowManager::class.java).currentWindowMetrics.bounds; bounds.width() to bounds.height()
     } else {
         val dm = DisplayMetrics(); (service.getSystemService(AccessibilityService.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(dm); dm.widthPixels to dm.heightPixels
+    }
+    @Suppress("DEPRECATION")
+    private fun displayRotation(): DisplayRotation = if (Build.VERSION.SDK_INT >= 30) {
+        val display = service.getSystemService(android.hardware.display.DisplayManager::class.java).getDisplay(android.view.Display.DEFAULT_DISPLAY)
+        DisplayRotation.fromSurface(display?.rotation ?: android.view.Surface.ROTATION_0)
+    } else {
+        val manager = service.getSystemService(AccessibilityService.WINDOW_SERVICE) as WindowManager
+        DisplayRotation.fromSurface(manager.defaultDisplay.rotation)
     }
     private fun publish() = AppGraph.runtime.setGestureMetrics(metrics)
 
