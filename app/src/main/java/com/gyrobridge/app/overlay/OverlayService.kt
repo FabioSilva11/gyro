@@ -339,14 +339,19 @@ private class MappingOverlayView(
     }
 
     private fun drawToolbar(canvas: Canvas) {
-        val margin = 12f * density
-        val height = 42f * density
-        val gap = 6f * density
-        val cellWidth = ((width - margin * 2f - gap * (Button.entries.size - 1)) / Button.entries.size).coerceAtLeast(42f * density)
-        var left = margin
+        val geometry = MapperToolbarLayout.calculate(width.toFloat(), density)
+        val panel = RectF(geometry.panelLeft, geometry.panelTop, geometry.panelRight, geometry.panelBottom)
+        paint.style = Paint.Style.FILL
+        paint.color = Color.argb(220, 2, 6, 23)
+        canvas.drawRoundRect(panel, 14f * density, 14f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = density
+        paint.color = Color.argb(210, 56, 189, 248)
+        canvas.drawRoundRect(panel, 14f * density, 14f * density, paint)
         buttons.clear()
         Button.entries.forEachIndexed { index, button ->
-            val rect = RectF(left, margin, left + cellWidth, margin + height)
+            val bounds = geometry.buttons[index]
+            val rect = RectF(bounds.left, bounds.top, bounds.right, bounds.bottom)
             buttons[button] = rect
             paint.style = Paint.Style.FILL
             paint.color = when {
@@ -355,24 +360,23 @@ private class MappingOverlayView(
                 button == Button.MOVEMENT && target == Target.MOVEMENT -> Color.argb(235, 22, 101, 52)
                 else -> Color.argb(225, 10, 18, 32)
             }
-            canvas.drawRoundRect(rect, 12f * density, 12f * density, paint)
+            canvas.drawRoundRect(rect, 9f * density, 9f * density, paint)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = density
             paint.color = Color.rgb(56, 189, 248)
-            canvas.drawRoundRect(rect, 12f * density, 12f * density, paint)
+            canvas.drawRoundRect(rect, 9f * density, 9f * density, paint)
             paint.style = Paint.Style.FILL
             paint.typeface = Typeface.DEFAULT_BOLD
             paint.textAlign = Paint.Align.CENTER
-            paint.textSize = 12f * density
+            paint.textSize = 10f * density
             paint.color = Color.WHITE
-            canvas.drawText(button.label, rect.centerX(), rect.centerY() + 4f * density, paint)
-            left = rect.right + gap
+            canvas.drawText(button.label, rect.centerX(), rect.centerY() + 3.5f * density, paint)
         }
-        paint.textAlign = Paint.Align.LEFT
+        paint.textAlign = Paint.Align.CENTER
         paint.typeface = Typeface.DEFAULT
-        paint.textSize = 12f * density
-        paint.color = Color.WHITE
-        canvas.drawText("Selecione CÂMERA ou MOV. e arraste a área", margin, margin + height + 22f * density, paint)
+        paint.textSize = 9f * density
+        paint.color = Color.rgb(186, 230, 253)
+        canvas.drawText("Selecione e arraste a área", panel.centerX(), panel.bottom - 8f * density, paint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -477,7 +481,7 @@ private class MappingOverlayView(
     private enum class Button(val label: String) {
         CAMERA("CÂMERA"),
         MOVEMENT("MOV."),
-        CANCEL("CANCELAR"),
+        CANCEL("SAIR"),
         SMALLER("−"),
         LARGER("+"),
         SAVE("SALVAR"),
