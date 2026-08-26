@@ -3,6 +3,7 @@ package com.gyrobridge.app.data.profile
 import com.gyrobridge.app.domain.model.*
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.abs
 
 object ProfileJsonCodec {
     fun encodeProfiles(profiles: List<ControlProfile>): String = JSONArray().apply {
@@ -16,7 +17,7 @@ object ProfileJsonCodec {
 
     fun encode(profile: ControlProfile): JSONObject = profile.sanitized().let { p ->
         JSONObject().apply {
-            put("version", 4); put("id", p.id); put("name", p.name); put("packageName", p.packageName)
+            put("version", 7); put("id", p.id); put("name", p.name); put("packageName", p.packageName)
             put("appLabel", p.appLabel); put("enabled", p.enabled); put("autoActivate", p.autoActivate)
             put("sensor", JSONObject().apply { put("rate", p.sensorConfig.rate.name); put("customHz", p.sensorConfig.customHz); put("preferredSensorType", p.sensorConfig.preferredSensorType) })
             put("axis", JSONObject().apply { put("xSource", p.axisConfig.xSource.name); put("ySource", p.axisConfig.ySource.name); put("invertX", p.axisConfig.invertX); put("invertY", p.axisConfig.invertY); put("invertRoll", p.axisConfig.invertRoll) })
@@ -54,14 +55,19 @@ object ProfileJsonCodec {
             cameraZone = ScreenZone(z.float("centerX", .72f), z.float("centerY", .5f), z.float("width", .42f), z.float("height", .58f), z.float("boundaryMargin", .04f), z.float("autoRecenterThreshold", .85f), z.nullableEnum("mappedDisplayRotation")),
             joystickConfig = JoystickConfig(j.optBoolean("enabled"), j.float("centerX", .2f), j.float("centerY", .72f), j.float("radius", .12f), j.float("tiltThreshold", 3f), j.float("maximumTilt", 30f), j.float("sensitivity", 1f), j.float("deadzone", 2f), j.enum("curve", ResponseCurve.LINEAR), j.optBoolean("invertX"), j.optBoolean("invertY")),
             physicalMovement = PhysicalMovementConfig(
-                enabled = schemaVersion >= 4 && movement.optBoolean("enabled"),
+                enabled = when {
+                    schemaVersion < 4 -> false
+                    schemaVersion == 4 -> true
+                    else -> movement.optBoolean("enabled", true)
+                },
                 forwardEnabled = movement.optBoolean("forwardEnabled", true),
                 backwardEnabled = movement.optBoolean("backwardEnabled", true),
-                threshold = movement.float("threshold", .35f),
+                threshold = movement.float("threshold", .12f).let { value -> if (schemaVersion < 6 && abs(value - .35f) < .001f) .12f else value },
                 sensitivity = movement.float("sensitivity", 1f),
                 minimumActiveMs = movement.optLong("minimumActiveMs", 180L),
-                stopTimeoutMs = movement.optLong("stopTimeoutMs", 450L),
+                stopTimeoutMs = movement.optLong("stopTimeoutMs", 1_000L).let { value -> if (schemaVersion < 6 && value == 450L) 1_000L else value },
                 joystickStrength = movement.float("joystickStrength", .85f),
+                stepLengthMeters = movement.float("stepLengthMeters", .70f),
                 zone = MovementZone(
                     centerX = movement.float("centerX", j.float("centerX", .2f)),
                     centerY = movement.float("centerY", j.float("centerY", .72f)),
@@ -79,6 +85,7 @@ object ProfileJsonCodec {
         put("enabled", config.enabled); put("forwardEnabled", config.forwardEnabled); put("backwardEnabled", config.backwardEnabled)
         put("threshold", config.threshold); put("sensitivity", config.sensitivity); put("minimumActiveMs", config.minimumActiveMs)
         put("stopTimeoutMs", config.stopTimeoutMs); put("joystickStrength", config.joystickStrength)
+        put("stepLengthMeters", config.stepLengthMeters)
         put("centerX", config.zone.centerX); put("centerY", config.zone.centerY); put("radius", config.zone.radius)
         put("mappedDisplayRotation", config.zone.mappedDisplayRotation?.name)
     }

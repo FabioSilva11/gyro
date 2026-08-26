@@ -75,6 +75,19 @@ class SessionControllerTest {
         assertEquals(SessionError.SENSOR_START_FAILED, snapshot.error)
     }
 
+    @Test
+    fun `lost sensor pauses an active session and remembers resume intent`() {
+        val controller = readyController()
+        controller.onEvent(SessionEvent.ExplicitResume(autoCalibrate = true))
+        controller.onEvent(SessionEvent.CalibrationCaptured)
+
+        val snapshot = controller.onEvent(SessionEvent.SensorLost)
+
+        assertEquals(SessionStatus.WAITING_SENSOR, snapshot.status)
+        assertFalse(snapshot.sensorAvailable)
+        assertTrue(snapshot.resumeRequested)
+    }
+
     private fun readyController() = SessionController().apply {
         onEvent(SessionEvent.Start)
         onEvent(SessionEvent.AccessibilityChanged(true))

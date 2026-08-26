@@ -52,7 +52,8 @@
         '<b>GYROBRIDGE:</b> ' + status + ' • ' + sensor +
         '<br>yaw <b>' + Number(safe.yaw || 0).toFixed(1) + '°</b> • pitch <b>' + Number(safe.pitch || 0).toFixed(1) + '°</b>' +
         '<br>rotação <b>' + Number(safe.rotation || 0) + '</b> • acessibilidade <b>' + (safe.accessibility ? 'ON' : 'OFF') + '</b>' +
-        '<br>movimento <b>' + movement + '</b> • acel. <b>' + Number(safe.forwardAcceleration || 0).toFixed(3) + '</b>';
+        '<br>movimento <b>' + movement + '</b> • acel. <b>' + Number(safe.forwardAcceleration || 0).toFixed(3) + '</b>' +
+        '<br>PDR <b>' + Number(safe.pdrPositionMeters || 0).toFixed(2) + ' m</b> • passos <b>' + Number(safe.stepCount || 0) + '</b>';
     };
   </script>
 </body>

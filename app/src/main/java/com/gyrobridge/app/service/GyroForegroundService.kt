@@ -24,6 +24,7 @@ import com.gyrobridge.app.sensor.MotionPipeline
 import com.gyrobridge.app.sensor.PhysicalMovementSensor
 import com.gyrobridge.app.sensor.PhysicalMovementOutput
 import com.gyrobridge.app.sensor.SensorEngine
+import com.gyrobridge.app.sensor.SensorLivenessMonitor
 import com.gyrobridge.app.telemetry.TestTelemetryPublisher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +33,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 private const val TAG = "GB_FgSvc"
@@ -43,9 +45,11 @@ class GyroForegroundService : Service() {
     private lateinit var sensorEngine: SensorEngine
     private lateinit var physicalMovementSensor: PhysicalMovementSensor
     private lateinit var telemetryPublisher: TestTelemetryPublisher
+    private val sensorLiveness = SensorLivenessMonitor(SENSOR_STALL_TIMEOUT_NANOS)
     @Volatile private var latestPhysicalOutput = PhysicalMovementOutput()
     private var sessionController = SessionController()
-    private var sampleJob: Job? = null; private var infoJob: Job? = null; private var calibrationJob: Job? = null
+    private var sampleJob: Job? = null; private var infoJob: Job? = null; private var calibrationJob: Job? = null; private var sensorWatchdogJob: Job? = null
+    private var sensorRecoveryInProgress = false
     private var profile: ControlProfile? = null; private var pipeline: MotionPipeline? = null
     private var autoDetectManager: AutoDetectManager? = null
     @Volatile private var latestSample = com.gyrobridge.app.sensor.OrientationSample()
@@ -128,11 +132,14 @@ class GyroForegroundService : Service() {
         val sensorSnapshot = sessionController.onEvent(SessionEvent.SensorStarted(sensorStarted))
         Log.i(TAG, "startSession: sensorStarted=$sensorStarted")
         if (!sensorStarted) {
+            sensorLiveness.stop()
             AppGraph.runtime.setSessionStatus(sensorSnapshot.status, sensorSnapshot.error)
             AppGraph.runtime.setPaused(true)
             updateNotification()
             return
         }
+        sensorLiveness.onSensorStarted(System.nanoTime())
+        startSensorWatchdog()
         val movementStarted = physicalMovementSensor.start(profile!!.physicalMovement)
         if (profile!!.physicalMovement.enabled && !movementStarted) {
             AppGraph.runtime.setPhysicalMovementState(com.gyrobridge.app.domain.model.PhysicalMovementState.STATIONARY)
@@ -142,6 +149,7 @@ class GyroForegroundService : Service() {
         sampleJob?.cancel(); sampleCount = 0L; sampleJob = scope.launch {
             sensorEngine.samples.collect { raw ->
                 if (raw.sensorTimestampNanos == 0L) return@collect
+                sensorLiveness.onSample(System.nanoTime())
                 latestSample = raw; sampleCount++
                 telemetryPublisher.publish(
                     orientation = raw,
@@ -236,6 +244,23 @@ class GyroForegroundService : Service() {
         val resuming = AppGraph.runtime.sessionPaused.value
         Log.i(TAG, "togglePause: resuming=$resuming")
         if (resuming) {
+            val currentProfile = profile ?: return
+            val sensorStalled = sensorLiveness.shouldRecover(System.nanoTime())
+            if (sensorStalled) {
+                sessionController.onEvent(SessionEvent.SensorLost)
+                calibrationJob?.cancel(); calibrationPhase = CalibrationPhase.IDLE
+                AppGraph.runtime.setCalibrating(false); AppGraph.runtime.setPaused(true)
+                GestureDispatcherRegistry.cancelAll(); physicalMovementSensor.stop()
+                val restarted = sensorEngine.start(currentProfile.sensorConfig)
+                sensorLiveness.onSensorStarted(System.nanoTime())
+                val restartedSnapshot = sessionController.onEvent(SessionEvent.SensorStarted(restarted))
+                if (!restarted) {
+                    AppGraph.runtime.setSessionStatus(restartedSnapshot.status, restartedSnapshot.error)
+                    refreshOverlay(); updateNotification()
+                    return
+                }
+                Log.i(TAG, "togglePause: sensor was stale; re-registered before resume")
+            }
             val autoCalibrate = profile?.calibrationConfig?.autoCalibrate == true
             if (sensorEngine.hasReference()) sessionController.onEvent(SessionEvent.CalibrationCaptured)
             val decision = sessionController.onEvent(SessionEvent.ExplicitResume(autoCalibrate))
@@ -245,8 +270,8 @@ class GyroForegroundService : Service() {
                 refreshOverlay(); updateNotification()
                 return
             }
-            physicalMovementSensor.start(profile?.physicalMovement ?: return)
-            if (autoCalibrate) beginCalibration()
+            physicalMovementSensor.start(currentProfile.physicalMovement)
+            if (autoCalibrate || sensorStalled) beginCalibration()
             else if (!sensorEngine.hasReference()) {
                 AppGraph.runtime.setPaused(true)
                 AppGraph.runtime.setSessionStatus(com.gyrobridge.app.domain.model.SessionStatus.PAUSED)
@@ -287,8 +312,13 @@ class GyroForegroundService : Service() {
         calibrationJob = scope.launch {
             delay(CALIBRATION_MAX_SETTLE_MS + 500L)
             if (calibrationPhase != CalibrationPhase.IDLE) {
-                Log.w(TAG, "Calibration safety timeout, finishing")
-                finishCalibration()
+                if (calibrationPhase == CalibrationPhase.WAITING_SENSOR) {
+                    Log.w(TAG, "Calibration safety timeout, sensor produced no sample")
+                    recoverOrientationSensor("calibration-timeout")
+                } else {
+                    Log.w(TAG, "Calibration safety timeout, finishing")
+                    finishCalibration()
+                }
             }
         }
         refreshOverlay(); updateNotification()
@@ -334,6 +364,48 @@ class GyroForegroundService : Service() {
         refreshOverlay(); updateNotification()
     }
 
+    private fun startSensorWatchdog() {
+        sensorWatchdogJob?.cancel()
+        sensorWatchdogJob = scope.launch {
+            while (isActive) {
+                delay(SENSOR_WATCHDOG_INTERVAL_MS)
+                if (!AppGraph.runtime.sessionActive.value) continue
+                val needsSamples = !AppGraph.runtime.sessionPaused.value || AppGraph.runtime.calibrating.value
+                if (needsSamples && sensorLiveness.shouldRecover(System.nanoTime())) {
+                    recoverOrientationSensor("watchdog")
+                }
+            }
+        }
+    }
+
+    private fun recoverOrientationSensor(reason: String) {
+        if (sensorRecoveryInProgress || !AppGraph.runtime.sessionActive.value) return
+        val currentProfile = profile ?: return
+        sensorRecoveryInProgress = true
+        try {
+            Log.w(TAG, "recoverOrientationSensor: reason=$reason")
+            val resumeAfterRecovery = !AppGraph.runtime.sessionPaused.value || AppGraph.runtime.calibrating.value || sessionController.snapshot.resumeRequested
+            sessionController.onEvent(SessionEvent.SensorLost)
+            calibrationJob?.cancel(); calibrationPhase = CalibrationPhase.IDLE
+            AppGraph.runtime.setCalibrating(false); AppGraph.runtime.setPaused(true)
+            AppGraph.runtime.setSessionStatus(com.gyrobridge.app.domain.model.SessionStatus.WAITING_SENSOR)
+            GestureDispatcherRegistry.cancelAll(); physicalMovementSensor.stop()
+            val restarted = sensorEngine.start(currentProfile.sensorConfig)
+            sensorLiveness.onSensorStarted(System.nanoTime())
+            val snapshot = sessionController.onEvent(SessionEvent.SensorStarted(restarted))
+            if (!restarted) {
+                AppGraph.runtime.setSessionStatus(snapshot.status, snapshot.error)
+            } else if (resumeAfterRecovery) {
+                beginCalibration()
+            } else {
+                AppGraph.runtime.setSessionStatus(snapshot.status, snapshot.error)
+            }
+            refreshOverlay(); updateNotification()
+        } finally {
+            sensorRecoveryInProgress = false
+        }
+    }
+
     private fun refreshOverlay() {
         if (profile?.overlayConfig?.enabled == true && android.provider.Settings.canDrawOverlays(this)) {
             runCatching { OverlayService.start(this) }
@@ -343,13 +415,13 @@ class GyroForegroundService : Service() {
     private fun stopSession() {
         Log.i(TAG, "stopSession")
         a11yConnectionListener?.let { GestureDispatcherRegistry.removeConnectionListener(it); a11yConnectionListener = null }
-        calibrationJob?.cancel(); sampleJob?.cancel(); infoJob?.cancel(); sensorEngine.stop(); physicalMovementSensor.stop(); GestureDispatcherRegistry.cancelAll()
+        calibrationJob?.cancel(); sampleJob?.cancel(); infoJob?.cancel(); sensorWatchdogJob?.cancel(); sensorLiveness.stop(); sensorEngine.stop(); physicalMovementSensor.stop(); GestureDispatcherRegistry.cancelAll()
         autoDetectManager?.stop(); autoDetectManager = null
         OverlayService.stop(this); AppGraph.runtime.reset(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) { if (!AppGraph.runtime.sessionActive.value) stopSelf(); super.onTaskRemoved(rootIntent) }
-    override fun onDestroy() { Log.w(TAG, "onDestroy"); instance = null; a11yConnectionListener?.let { GestureDispatcherRegistry.removeConnectionListener(it) }; sensorEngine.stop(); physicalMovementSensor.stop(); autoDetectManager?.stop(); autoDetectManager = null; calibrationJob?.cancel(); sampleJob?.cancel(); infoJob?.cancel(); if (AppGraph.runtime.sessionActive.value) AppGraph.runtime.reset(); scope.cancel(); super.onDestroy() }
+    override fun onDestroy() { Log.w(TAG, "onDestroy"); instance = null; a11yConnectionListener?.let { GestureDispatcherRegistry.removeConnectionListener(it) }; sensorWatchdogJob?.cancel(); sensorLiveness.stop(); sensorEngine.stop(); physicalMovementSensor.stop(); autoDetectManager?.stop(); autoDetectManager = null; calibrationJob?.cancel(); sampleJob?.cancel(); infoJob?.cancel(); if (AppGraph.runtime.sessionActive.value) AppGraph.runtime.reset(); scope.cancel(); super.onDestroy() }
 
     private fun notification(): Notification {
         val p = profile; val sensor = AppGraph.runtime.sensorInfo.value; val paused = AppGraph.runtime.sessionPaused.value; val calibrating = AppGraph.runtime.calibrating.value
@@ -381,6 +453,8 @@ class GyroForegroundService : Service() {
         const val ACTION_AUTODETECT_STOP = "com.gyrobridge.AUTODETECT_STOP"
         const val EXTRA_PROFILE_ID = "profile_id"; private const val CHANNEL_ID = "gyro_control"; private const val NOTIFICATION_ID = 4101
         private const val CALIBRATION_MAX_SETTLE_MS = 3_000L
+        private const val SENSOR_WATCHDOG_INTERVAL_MS = 500L
+        private const val SENSOR_STALL_TIMEOUT_NANOS = 1_500_000_000L
         fun start(context: Context, profileId: String) = ContextCompat.startForegroundService(context, Intent(context, GyroForegroundService::class.java).setAction(ACTION_START).putExtra(EXTRA_PROFILE_ID, profileId))
         fun switchProfile(context: Context, profileId: String) = context.startService(Intent(context, GyroForegroundService::class.java).setAction(ACTION_SWITCH).putExtra(EXTRA_PROFILE_ID, profileId))
         fun action(context: Context, action: String) = context.startService(Intent(context, GyroForegroundService::class.java).setAction(action))

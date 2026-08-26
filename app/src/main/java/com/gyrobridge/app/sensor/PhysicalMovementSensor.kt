@@ -5,6 +5,7 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.util.Log
 import com.gyrobridge.app.domain.model.PhysicalMovementConfig
 import com.gyrobridge.app.domain.model.PhysicalMovementState
 
@@ -18,6 +19,8 @@ class PhysicalMovementSensor(
     private var linearAcceleration: Sensor? = null
     private var stepDetector: Sensor? = null
     private var stepPending = false
+    private var lastState = PhysicalMovementState.STATIONARY
+    private var lastStepCount = -1
 
     fun start(config: PhysicalMovementConfig): Boolean {
         stop()
@@ -27,7 +30,11 @@ class PhysicalMovementSensor(
         linearAcceleration = linear
         stepDetector = manager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
         val linearRegistered = manager.registerListener(this, linear, SensorManager.SENSOR_DELAY_GAME)
-        stepDetector?.let { manager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+        stepDetector?.let { sensor ->
+            runCatching { manager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL) }
+                .onFailure { Log.w(TAG, "step detector indisponível; usando aceleração linear", it) }
+        }
+        Log.i(TAG, "start: linear=${linear.name} stepDetector=${stepDetector != null} threshold=${config.threshold} stopTimeout=${config.stopTimeoutMs}")
         return linearRegistered
     }
 
@@ -38,6 +45,8 @@ class PhysicalMovementSensor(
         linearAcceleration = null
         stepDetector = null
         stepPending = false
+        lastState = PhysicalMovementState.STATIONARY
+        lastStepCount = -1
         onOutput(PhysicalMovementOutput(state = PhysicalMovementState.STATIONARY))
     }
 
@@ -53,11 +62,22 @@ class PhysicalMovementSensor(
                 forwardAcceleration = forwardAcceleration,
                 stepDetected = stepPending,
                 timestampNanos = event.timestamp,
+                stepSensorAvailable = stepDetector != null,
             ),
         ) ?: return
         stepPending = false
+        if (output.state != lastState) {
+            Log.i(TAG, "movement state=${output.state} signal=${"%.3f".format(output.forwardSignal)} confidence=${"%.2f".format(output.confidence)}")
+            lastState = output.state
+        }
+        if (output.stepCount != lastStepCount) {
+            Log.i(TAG, "pdr step=${output.stepCount} positionMeters=${"%.2f".format(output.pdrPositionMeters)}")
+            lastStepCount = output.stepCount
+        }
         onOutput(output)
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    private companion object { const val TAG = "GB_Sensor" }
 }

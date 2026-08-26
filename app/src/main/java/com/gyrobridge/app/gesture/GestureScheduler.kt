@@ -38,6 +38,7 @@ class GestureScheduler(private val service: AccessibilityService) {
     fun configure(profile: ControlProfile) {
         generation++
         continuedStroke = null; continuedMovementStroke = null; dispatching = false
+        movementState = PhysicalMovementState.STATIONARY; movementDirty = false
         this.profile = profile.sanitized(); accumulator = GestureAccumulator(this.profile.gestureConfig.maxSwipeDistance)
         val (w, h) = displaySize(); val zone = ScreenCoordinateMapper.cameraToPixels(this.profile.cameraZone, w, h, displayRotation())
         lastDisplayWidth = w; lastDisplayHeight = h; virtualX = zone.centerX; virtualY = zone.centerY
@@ -57,6 +58,7 @@ class GestureScheduler(private val service: AccessibilityService) {
 
     fun updateMovement(state: PhysicalMovementState) {
         if (movementState == state || stopped || !profile.physicalMovement.enabled) return
+        Log.i(TAG, "Movement state: $movementState -> $state")
         movementState = state
         movementDirty = true
         metrics = metrics.copy(state = GestureState.QUEUED, queued = metrics.queued + 1)
@@ -136,6 +138,15 @@ class GestureScheduler(private val service: AccessibilityService) {
                 runCatching { previous.continueStroke(Path().apply { moveTo(startX, startY) }, 0, duration, false) }.getOrNull()
             }
             val movementResult = movementStroke(width, height, duration)
+            if (stroke == null && movementResult.stroke == null) {
+                Log.d(TAG, "Skipping empty gesture: no camera or movement stroke")
+                dispatching = false
+                movementDirty = false
+                metrics = metrics.copy(state = GestureState.IDLE)
+                publish()
+                scheduleNext()
+                return@run
+            }
             val builder = GestureDescription.Builder()
             stroke?.let(builder::addStroke)
             movementResult.stroke?.let(builder::addStroke)
@@ -184,7 +195,13 @@ class GestureScheduler(private val service: AccessibilityService) {
         val targetY = zone.centerY + direction * zone.radiusPx * config.joystickStrength
         val path = Path().apply {
             if (previous == null) moveTo(zone.centerX, zone.centerY) else moveTo(zone.centerX, targetY)
-            lineTo(zone.centerX, targetY)
+            if (previous == null) {
+                lineTo(zone.centerX, targetY)
+            } else {
+                val nudge = if (direction < 0f) .75f else -.75f
+                lineTo(zone.centerX, targetY + nudge)
+                lineTo(zone.centerX, targetY)
+            }
         }
         val stroke = previous?.let { runCatching { it.continueStroke(path, 0, duration, true) }.getOrNull() }
             ?: GestureDescription.StrokeDescription(path, 0, duration, true)

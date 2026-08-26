@@ -29,6 +29,7 @@ class ProfileJsonCodecTest {
         val original = ControlProfile(
             physicalMovement = PhysicalMovementConfig(
                 enabled = true,
+                stepLengthMeters = .82f,
                 zone = MovementZone(
                     centerX = .2f,
                     centerY = .72f,
@@ -51,5 +52,26 @@ class ProfileJsonCodecTest {
         assertFalse(json.contains("zeroRoll"))
         assertFalse(json.contains("\"joystick\""))
         assertFalse(json.contains("interactionMode"))
+    }
+
+    @Test fun `version four development profiles migrate physical movement on`() {
+        val profile = ProfileJsonCodec.decode("""{"version":4,"physicalMovement":{"enabled":false}}""")
+
+        assertTrue(profile.physicalMovement.enabled)
+    }
+
+    @Test fun `current profiles preserve an explicitly disabled physical movement`() {
+        val profile = ProfileJsonCodec.decode("""{"version":5,"physicalMovement":{"enabled":false}}""")
+
+        assertFalse(profile.physicalMovement.enabled)
+    }
+
+    @Test fun `legacy default movement tuning migrates to walking friendly values`() {
+        val profile = ProfileJsonCodec.decode(
+            """{"version":5,"physicalMovement":{"enabled":true,"threshold":0.35,"stopTimeoutMs":450}}""",
+        )
+
+        assertEquals(.12f, profile.physicalMovement.threshold, .0001f)
+        assertEquals(1_000L, profile.physicalMovement.stopTimeoutMs)
     }
 }

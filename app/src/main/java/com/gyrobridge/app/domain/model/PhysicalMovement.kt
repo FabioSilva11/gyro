@@ -10,14 +10,15 @@ data class MovementZone(
 )
 
 data class PhysicalMovementConfig(
-    val enabled: Boolean = false,
+    val enabled: Boolean = true,
     val forwardEnabled: Boolean = true,
     val backwardEnabled: Boolean = true,
-    val threshold: Float = 0.35f,
+    val threshold: Float = 0.12f,
     val sensitivity: Float = 1f,
     val minimumActiveMs: Long = 180L,
-    val stopTimeoutMs: Long = 450L,
+    val stopTimeoutMs: Long = 1_000L,
     val joystickStrength: Float = 0.85f,
+    val stepLengthMeters: Float = 0.70f,
     val zone: MovementZone = MovementZone(),
 )
 
@@ -49,5 +50,6 @@ fun PhysicalMovementConfig.sanitized(): PhysicalMovementConfig = copy(
     minimumActiveMs = minimumActiveMs.coerceIn(50L, 5_000L),
     stopTimeoutMs = stopTimeoutMs.coerceIn(50L, 10_000L),
     joystickStrength = joystickStrength.safe(0f, 1f, 0.85f),
+    stepLengthMeters = stepLengthMeters.safe(0.20f, 1.50f, 0.70f),
     zone = zone.sanitized(),
 )

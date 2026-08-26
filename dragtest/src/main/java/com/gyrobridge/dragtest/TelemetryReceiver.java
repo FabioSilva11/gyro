@@ -30,6 +30,8 @@ final class TelemetryReceiver extends BroadcastReceiver {
             value.put("accessibility", intent.getBooleanExtra("accessibility", false));
             value.put("movement", intent.getStringExtra("movement"));
             value.put("forwardAcceleration", intent.getFloatExtra("forwardAcceleration", 0f));
+            value.put("pdrPositionMeters", intent.getFloatExtra("pdrPositionMeters", 0f));
+            value.put("stepCount", intent.getIntExtra("stepCount", 0));
             listener.onTelemetry(value.toString());
         } catch (Exception ignored) {
             listener.onTelemetry("{}");

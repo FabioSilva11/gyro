@@ -1,4 +1,5 @@
 import * as THREE from './three.module.min.js';
+import { advancePosition } from './movement-model.mjs';
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x071426);
@@ -34,6 +35,7 @@ let downs=0,moves=0,ups=0,maxGap=0,lastMoveAt=0,frames=0,fps=0,lastFpsAt=perform
 let movActive=false, movPointerId=-1, movLastX=0, movLastY=0, movWorldX=0, movWorldY=0;
 let mDowns=0,mMoves=0,mUps=0;
 const MOVE_RADIUS=60;
+const MOVE_SPEED=4;
 
 const el=id=>document.getElementById(id);
 
@@ -102,8 +104,13 @@ renderer.domElement.addEventListener('pointerup',endPointer);renderer.domElement
 el('reset').addEventListener('click',e=>{downs=moves=ups=maxGap=0;mDowns=mMoves=mUps=0;yaw=pitch=0;movWorldX=0;movWorldY=0;updateHud();e.stopPropagation()});
 
 addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
+let lastFrameAt=performance.now();
 function animate(now){
-  requestAnimationFrame(animate); camera.rotation.y=yaw;camera.rotation.x=pitch;renderer.render(scene,camera);frames++;
+  requestAnimationFrame(animate);
+  const deltaSeconds=Math.max(0,Math.min(.1,(now-lastFrameAt)/1000));lastFrameAt=now;
+  const nextPosition=advancePosition({x:camera.position.x,z:camera.position.z},yaw,movWorldX,movWorldY,deltaSeconds,MOVE_SPEED);
+  camera.position.x=nextPosition.x;camera.position.z=nextPosition.z;
+  camera.rotation.y=yaw;camera.rotation.x=pitch;renderer.render(scene,camera);frames++;
   if(now-lastFpsAt>=1000){fps=Math.round(frames*1000/(now-lastFpsAt));frames=0;lastFpsAt=now;updateHud()}
 }
 requestAnimationFrame(animate);updateHud();

@@ -34,6 +34,8 @@ class TestTelemetryPublisher(private val context: Context) {
             .putExtra("accessibility", accessibilityAvailable)
             .putExtra("movement", movement.state.name)
             .putExtra("forwardAcceleration", movement.forwardSignal)
+            .putExtra("pdrPositionMeters", movement.pdrPositionMeters)
+            .putExtra("stepCount", movement.stepCount)
         context.sendBroadcast(intent, TELEMETRY_PERMISSION)
     }
 

@@ -7,6 +7,7 @@ sealed interface SessionEvent {
     data object Start : SessionEvent
     data class AccessibilityChanged(val available: Boolean) : SessionEvent
     data class SensorStarted(val success: Boolean) : SessionEvent
+    data object SensorLost : SessionEvent
     data class ExplicitResume(val autoCalibrate: Boolean) : SessionEvent
     data object CalibrationCaptured : SessionEvent
     data object Pause : SessionEvent
@@ -31,6 +32,12 @@ class SessionController {
             SessionEvent.Start -> SessionSnapshot(status = SessionStatus.PAUSED)
             is SessionEvent.AccessibilityChanged -> onAccessibilityChanged(event.available)
             is SessionEvent.SensorStarted -> onSensorStarted(event.success)
+            SessionEvent.SensorLost -> snapshot.copy(
+                status = SessionStatus.WAITING_SENSOR,
+                error = null,
+                sensorAvailable = false,
+                resumeRequested = snapshot.resumeRequested || snapshot.status == SessionStatus.ACTIVE || snapshot.status == SessionStatus.CALIBRATING,
+            )
             is SessionEvent.ExplicitResume -> onExplicitResume(event.autoCalibrate)
             SessionEvent.CalibrationCaptured -> onCalibrationCaptured()
             SessionEvent.Pause -> snapshot.copy(

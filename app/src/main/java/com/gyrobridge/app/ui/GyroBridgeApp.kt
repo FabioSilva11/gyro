@@ -359,11 +359,14 @@ private enum class MappingTarget { CAMERA, MOVEMENT }
 @Composable private fun PermissionsScreen() {
     val context = LocalContext.current; val owner = LocalLifecycleOwner.current; var refresh by remember { mutableIntStateOf(0) }
     val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
+    val activityRecognitionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
     DisposableEffect(owner) { val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) refresh++ }; owner.lifecycle.addObserver(observer); onDispose { owner.lifecycle.removeObserver(observer) } }
     val accessibility = remember(refresh) { isAccessibilityEnabled(context) }; val overlay = remember(refresh) { OverlayController.canDraw(context) }
     val notifications = Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    val activityRecognition = Build.VERSION.SDK_INT < 29 || ContextCompat.checkSelfPermission(context, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { PermissionCard("Sensores", "Não exige permissão em tempo de execução. Taxas acima de 200 Hz usam HIGH_SAMPLING_RATE_SENSORS.", true, "Disponível") {} }
+        item { PermissionCard("Sensores", "Taxas acima de 200 Hz usam HIGH_SAMPLING_RATE_SENSORS.", true, "Disponível") {} }
+        if (Build.VERSION.SDK_INT >= 29) item { PermissionCard("Reconhecimento de atividade", "Necessário para detectar os passos e manter o joystick pressionado durante a caminhada.", activityRecognition, if (activityRecognition) "Autorizado" else "Permitir") { activityRecognitionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION) } }
         item { PermissionCard("AccessibilityService", "Necessário para enviar swipes. O GyroBridge não lê conteúdo, senhas nem textos da tela.", accessibility, if(accessibility) "Ativo" else "Configurar") { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } }
         item { PermissionCard("Sobrepor outros apps", "Necessário apenas para o painel flutuante e o mapeamento sobre outro aplicativo.", overlay, if(overlay) "Autorizado" else "Configurar") { context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))) } }
         if (overlay) item { OutlinedButton(onClick = { OverlayController.show(context) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.PictureInPictureAlt, null); Text(" TESTAR OVERLAY AGORA") } }
