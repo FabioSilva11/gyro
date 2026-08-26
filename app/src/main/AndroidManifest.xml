@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <permission
+        android:name="com.gyrobridge.permission.TEST_TELEMETRY"
+        android:protectionLevel="signature" />
     <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
     <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />

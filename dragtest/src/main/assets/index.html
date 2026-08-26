@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+  <title>Gyro VR Test</title>
+  <style>
+    *{box-sizing:border-box} html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#020617;color:#e2e8f0;font-family:system-ui,sans-serif;touch-action:none}
+    canvas{display:block;width:100%;height:100%;touch-action:none}
+    #hud{position:fixed;left:12px;bottom:12px;min-width:270px;padding:10px 12px;border:1px solid #38bdf8;border-radius:12px;background:#020617d8;font-size:12px;line-height:1.45;pointer-events:none}
+    #hud b{color:#7dd3fc} #state{font-weight:800;color:#fbbf24} #state.good{color:#86efac} #state.bad{color:#fda4af}
+    #movHud{position:fixed;right:12px;bottom:12px;min-width:220px;padding:10px 12px;border:1px solid #22c55e;border-radius:12px;background:#020617d8;font-size:12px;line-height:1.45;pointer-events:none}
+    #movHud b{color:#86efac} #movState{font-weight:800;color:#fbbf24} #movState.good{color:#86efac}
+    #title{position:fixed;top:10px;left:50%;transform:translateX(-50%);padding:6px 12px;border-radius:999px;background:#020617bb;color:#bae6fd;font-size:13px;font-weight:700;pointer-events:none}
+    #cross{position:fixed;left:50%;top:50%;width:22px;height:22px;transform:translate(-50%,-50%);pointer-events:none}
+    #cross:before,#cross:after{content:"";position:absolute;background:#fff;box-shadow:0 0 5px #38bdf8} #cross:before{left:10px;top:0;width:2px;height:22px} #cross:after{top:10px;left:0;width:22px;height:2px}
+    #movCircle{position:fixed;left:12px;top:50%;transform:translateY(-50%);width:120px;height:120px;border:2px solid #22c55e;border-radius:50%;background:#22c55e11;pointer-events:none}
+    #movDot{position:absolute;width:14px;height:14px;border-radius:50%;background:#22c55e;transform:translate(-50%,-50%);left:50%;top:50%;transition:none;pointer-events:none}
+    #movCrossH,#movCrossV{position:absolute;background:#22c55e44;pointer-events:none} #movCrossH{width:100%;height:1px;top:50%} #movCrossV{width:1px;height:100%;left:50%}
+    #reset{position:fixed;right:12px;top:12px;border:1px solid #38bdf8;border-radius:10px;background:#0f172ae8;color:#fff;padding:10px 14px;font-weight:700;touch-action:manipulation}
+    #zones{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:200px;height:200px;border:1px dashed #ffffff33;border-radius:12px;pointer-events:none}
+    #zones .lbl{position:absolute;font-size:10px;color:#ffffff55;pointer-events:none} #zones .cam{right:-60px;top:50%;transform:translateY(-50%)} #zones .mov{left:-60px;top:50%;transform:translateY(-50%)}
+    #telemetry{position:fixed;left:12px;top:12px;max-width:42vw;padding:8px 10px;border:1px solid #a78bfa;border-radius:10px;background:#020617d8;font-size:11px;line-height:1.4;pointer-events:none}
+    #telemetry b{color:#c4b5fd}
+  </style>
+</head>
+<body>
+  <div id="title">GYRO VR TEST • CÂMERA + MOVIMENTO</div>
+  <div id="cross"></div>
+  <div id="movCircle"><div id="movCrossH"></div><div id="movCrossV"></div><div id="movDot"></div></div>
+  <div id="hud">
+    <div id="state">AGUARDANDO ARRASTO</div>
+    <div>Eventos: DOWN <b id="down">0</b> • MOVE <b id="move">0</b> • UP <b id="up">0</b></div>
+    <div>Movimentos por toque: <b id="ratio">0.0</b> • maior intervalo: <b id="gap">0</b> ms</div>
+    <div>Câmera: yaw <b id="yaw">0.0</b>° • pitch <b id="pitch">0.0</b>° • FPS <b id="fps">0</b></div>
+  </div>
+  <div id="movHud">
+    <div id="movState">AGUARDANDO MOVIMENTO</div>
+    <div>DOWN <b id="mDown">0</b> • MOVE <b id="mMove">0</b> • UP <b id="mUp">0</b></div>
+    <div>Mov X <b id="movX">0.0</b> • Mov Y <b id="movY">0.0</b></div>
+  </div>
+  <button id="reset">ZERAR MÉTRICAS</button>
+  <div id="telemetry"><b>GYROBRIDGE:</b> telemetria indisponível</div>
+  <script src="game.bundle.js"></script>
+  <script>
+    window.onGyroBridgeTelemetry = function(data) {
+      const safe = data || {};
+      const sensor = String(safe.sensor || 'sem sensor').slice(0, 48);
+      const status = String(safe.status || 'DESCONHECIDO').slice(0, 32);
+      const movement = String(safe.movement || 'STATIONARY').slice(0, 20);
+      document.getElementById('telemetry').innerHTML =
+        '<b>GYROBRIDGE:</b> ' + status + ' • ' + sensor +
+        '<br>yaw <b>' + Number(safe.yaw || 0).toFixed(1) + '°</b> • pitch <b>' + Number(safe.pitch || 0).toFixed(1) + '°</b>' +
+        '<br>rotação <b>' + Number(safe.rotation || 0) + '</b> • acessibilidade <b>' + (safe.accessibility ? 'ON' : 'OFF') + '</b>' +
+        '<br>movimento <b>' + movement + '</b> • acel. <b>' + Number(safe.forwardAcceleration || 0).toFixed(3) + '</b>';
+    };
+  </script>
+</body>
+</html>

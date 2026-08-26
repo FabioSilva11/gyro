@@ -22,8 +22,10 @@ import com.gyrobridge.app.gesture.GestureDispatcherRegistry
 import com.gyrobridge.app.overlay.OverlayService
 import com.gyrobridge.app.sensor.MotionPipeline
 import com.gyrobridge.app.sensor.PhysicalMovementSensor
+import com.gyrobridge.app.sensor.PhysicalMovementOutput
 import com.gyrobridge.app.sensor.SensorCalibration
 import com.gyrobridge.app.sensor.SensorEngine
+import com.gyrobridge.app.telemetry.TestTelemetryPublisher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -41,6 +43,8 @@ class GyroForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var sensorEngine: SensorEngine
     private lateinit var physicalMovementSensor: PhysicalMovementSensor
+    private lateinit var telemetryPublisher: TestTelemetryPublisher
+    @Volatile private var latestPhysicalOutput = PhysicalMovementOutput()
     private var sessionController = SessionController()
     private var sampleJob: Job? = null; private var infoJob: Job? = null; private var calibrationJob: Job? = null
     private var profile: ControlProfile? = null; private var pipeline: MotionPipeline? = null; private var calibration: SensorCalibration? = null
@@ -58,7 +62,9 @@ class GyroForegroundService : Service() {
         super.onCreate()
         instance = this
         sensorEngine = SensorEngine(this)
+        telemetryPublisher = TestTelemetryPublisher(this)
         physicalMovementSensor = PhysicalMovementSensor(this, sensorEngine::projectForwardAcceleration) { output ->
+            latestPhysicalOutput = output
             AppGraph.runtime.setPhysicalMovementState(output.state)
             GestureDispatcherRegistry.updateMovement(output.state)
         }
@@ -138,6 +144,13 @@ class GyroForegroundService : Service() {
             sensorEngine.samples.collect { raw ->
                 if (raw.sensorTimestampNanos == 0L) return@collect
                 latestSample = raw; sampleCount++
+                telemetryPublisher.publish(
+                    orientation = raw,
+                    movement = latestPhysicalOutput,
+                    sensorName = AppGraph.runtime.sensorInfo.value.name,
+                    status = AppGraph.runtime.sessionStatus.value,
+                    accessibilityAvailable = AppGraph.runtime.a11yAvailable.value,
+                )
                 if (sampleCount % 200L == 1L) {
                     Log.d(TAG, "sample #$sampleCount: yaw=${"%.2f".format(raw.yaw)} pitch=${"%.2f".format(raw.pitch)} roll=${"%.2f".format(raw.roll)} paused=${AppGraph.runtime.sessionPaused.value} calibrating=${AppGraph.runtime.calibrating.value} phase=$calibrationPhase")
                 }
