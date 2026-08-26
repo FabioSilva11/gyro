@@ -1,6 +1,7 @@
 package com.gyrobridge.app.sensor
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OrientationProcessorTest {
@@ -24,5 +25,15 @@ class OrientationProcessorTest {
         assertEquals(0f, yaw, .001f)
         assertEquals(0f, pitch, .001f)
         assertEquals(90f, roll, .001f)
+    }
+
+    @Test fun `display rotation change does not discard captured reference`() {
+        val processor = OrientationProcessor()
+        processor.setCurrentMatrixForTest(floatArrayOf(1f,0f,0f,0f,1f,0f,0f,0f,1f))
+        assertTrue(processor.captureReference())
+
+        processor.onDisplayRotationChanged(android.view.Surface.ROTATION_90)
+
+        assertTrue(processor.hasReference())
     }
 }

@@ -98,8 +98,7 @@ class SensorEngine(private val context: Context) : SensorEventListener {
 
     fun unlockReferenceFrame() {
         lockedDisplayRotation = null
-        processor.resetReferenceFrame()
-        lastDisplayRotation = -1
+        lastDisplayRotation = displayRotation()
         Log.i(TAG, "unlockReferenceFrame")
     }
 

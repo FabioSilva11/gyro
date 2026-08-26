@@ -76,11 +76,8 @@ class OrientationProcessor {
 
     @Synchronized
     fun recenter(): Boolean {
-        if (hasCurrentMatrix) {
-            currentMatrix.copyInto(referenceMatrix)
-            hasReference = true
+        if (captureReference()) {
             Log.i(TAG, "recenter: captured rotation vector reference")
-            clearPreviousPose()
             return true
         } else if (lastGyroTimestamp != 0L) {
             gyroYaw = 0f; gyroPitch = 0f; gyroRoll = 0f
@@ -98,7 +95,26 @@ class OrientationProcessor {
     }
 
     @Synchronized
+    fun captureReference(): Boolean {
+        if (!hasCurrentMatrix) return false
+        currentMatrix.copyInto(referenceMatrix)
+        hasReference = true
+        clearPreviousPose()
+        return true
+    }
+
+    @Synchronized
     fun hasReceivedData(): Boolean = hasReceivedAnyData
+
+    @Synchronized
+    fun hasReference(): Boolean = hasReference
+
+    internal fun setCurrentMatrixForTest(matrix: FloatArray) {
+        require(matrix.size >= 9)
+        matrix.copyInto(currentMatrix, endIndex = 9)
+        hasCurrentMatrix = true
+        hasReceivedAnyData = true
+    }
 
     @Synchronized
     fun resetIntegration() {
@@ -125,8 +141,6 @@ class OrientationProcessor {
 
     @Synchronized
     fun onDisplayRotationChanged(newRotation: Int) {
-        Log.d(TAG, "onDisplayRotationChanged: rotation=$newRotation hasRef=$hasReference hasCurrent=$hasCurrentMatrix")
-        hasReference = false; referenceMatrix.fill(0f)
         clearPreviousPose()
     }
 
