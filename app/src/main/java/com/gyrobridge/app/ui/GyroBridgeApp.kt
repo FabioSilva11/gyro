@@ -243,11 +243,10 @@ private enum class Route(val label: String) {
     DisposableEffect(profile?.id) { profile?.let(vm::startPreview); onDispose(vm::stopPreview) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Card { Column(Modifier.padding(20.dp)) { Text("Posição atual", style = MaterialTheme.typography.titleMedium); Spacer(Modifier.height(16.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) { Angle("Yaw", sample.yaw); Angle("Pitch", sample.pitch); Angle("Roll", sample.roll) } } }
-        Button(onClick = { if (vm.runtime.sessionActive.value) vm.calibrate() else { vm.calibrateEditingFromPreview(); vm.saveEditing() } }, enabled = profile != null, modifier = Modifier.fillMaxWidth().height(52.dp)) { Icon(Icons.Default.CenterFocusStrong, null); Text(" DEFINIR POSIÇÃO ATUAL COMO CENTRO") }
+        Button(onClick = { if (vm.runtime.sessionActive.value) vm.calibrate() else vm.calibratePreview() }, enabled = profile != null, modifier = Modifier.fillMaxWidth().height(52.dp)) { Icon(Icons.Default.CenterFocusStrong, null); Text(" DEFINIR POSIÇÃO ATUAL COMO CENTRO") }
         profile?.let { p ->
-            Text("Offsets salvos", style = MaterialTheme.typography.titleMedium)
-            Text("Yaw ${"%.2f".format(p.calibrationConfig.zeroYaw)}°   Pitch ${"%.2f".format(p.calibrationConfig.zeroPitch)}°   Roll ${"%.2f".format(p.calibrationConfig.zeroRoll)}°")
-            Text("Ao tocar CALIBRAR + INICIAR, a posição atual do celular sempre se torna o centro e a primeira amostra não movimenta a câmera.", style = MaterialTheme.typography.bodySmall)
+            Text("Referencial da sessão", style = MaterialTheme.typography.titleMedium)
+            Text("Ao tocar CALIBRAR + INICIAR, a orientação atual inteira do aparelho se torna o centro. O referencial não é trocado quando a tela gira.", style = MaterialTheme.typography.bodySmall)
             SettingSwitch("Auto Recenter", "Intervalo: ${p.calibrationConfig.autoRecenterSeconds}s", p.calibrationConfig.autoRecenter) { v -> vm.updateEditing { it.copy(calibrationConfig = it.calibrationConfig.copy(autoRecenter = v)) } }
             SettingSwitch("Compensação de drift", null, p.calibrationConfig.driftCompensation) { v -> vm.updateEditing { it.copy(calibrationConfig = it.calibrationConfig.copy(driftCompensation = v)) } }
         }

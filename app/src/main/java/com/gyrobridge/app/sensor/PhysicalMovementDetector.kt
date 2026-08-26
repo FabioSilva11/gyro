@@ -41,7 +41,9 @@ class PhysicalMovementDetector(config: PhysicalMovementConfig) {
         window[windowIndex] = scaled
         windowIndex = (windowIndex + 1) % window.size
         windowCount = (windowCount + 1).coerceAtMost(window.size)
-        val signal = window.take(windowCount).average().toFloat()
+        var sum = 0f
+        for (index in 0 until windowCount) sum += window[index]
+        val signal = if (windowCount == 0) 0f else sum / windowCount
         val threshold = if (output.state == PhysicalMovementState.STATIONARY) config.threshold else config.threshold * EXIT_THRESHOLD_RATIO
         val detected = when {
             signal >= threshold && config.forwardEnabled -> PhysicalMovementState.FORWARD

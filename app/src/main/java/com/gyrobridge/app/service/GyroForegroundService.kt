@@ -23,7 +23,6 @@ import com.gyrobridge.app.overlay.OverlayService
 import com.gyrobridge.app.sensor.MotionPipeline
 import com.gyrobridge.app.sensor.PhysicalMovementSensor
 import com.gyrobridge.app.sensor.PhysicalMovementOutput
-import com.gyrobridge.app.sensor.SensorCalibration
 import com.gyrobridge.app.sensor.SensorEngine
 import com.gyrobridge.app.telemetry.TestTelemetryPublisher
 import kotlinx.coroutines.CoroutineScope
@@ -47,7 +46,7 @@ class GyroForegroundService : Service() {
     @Volatile private var latestPhysicalOutput = PhysicalMovementOutput()
     private var sessionController = SessionController()
     private var sampleJob: Job? = null; private var infoJob: Job? = null; private var calibrationJob: Job? = null
-    private var profile: ControlProfile? = null; private var pipeline: MotionPipeline? = null; private var calibration: SensorCalibration? = null
+    private var profile: ControlProfile? = null; private var pipeline: MotionPipeline? = null
     private var autoDetectManager: AutoDetectManager? = null
     @Volatile private var latestSample = com.gyrobridge.app.sensor.OrientationSample()
     private var lastAutoRecenterNanos = 0L
@@ -98,7 +97,7 @@ class GyroForegroundService : Service() {
         Log.i(TAG, "startSession: profile=${value.name} a11yAvailable=${GestureDispatcherRegistry.isAvailable()}")
         sessionController = SessionController()
         sessionController.onEvent(SessionEvent.Start)
-        profile = value.sanitized(); pipeline = MotionPipeline(profile!!); calibration = SensorCalibration(profile!!.calibrationConfig)
+        profile = value.sanitized(); pipeline = MotionPipeline(profile!!)
         calibrationJob?.cancel(); calibrationPhase = CalibrationPhase.IDLE
         latestSample = com.gyrobridge.app.sensor.OrientationSample(); lastAutoRecenterNanos = System.nanoTime()
         AppGraph.runtime.setProfile(profile); AppGraph.runtime.setSession(true, paused = true); AppGraph.runtime.setCalibrating(false)
@@ -171,17 +170,15 @@ class GyroForegroundService : Service() {
                 val calibrationConfig = profile?.calibrationConfig
                 if (calibrationConfig?.autoRecenter == true && raw.sensorTimestampNanos - lastAutoRecenterNanos >= calibrationConfig.autoRecenterSeconds * 1_000_000_000L && maxOf(kotlin.math.abs(raw.deltaYaw), kotlin.math.abs(raw.deltaPitch), kotlin.math.abs(raw.deltaRoll)) <= calibrationConfig.restTolerance) {
                     if (sensorEngine.recenter()) {
-                        calibration?.reset(); pipeline?.reset()
+                        pipeline?.reset()
                         lastAutoRecenterNanos = raw.sensorTimestampNanos
-                        persistCalibration()
                     }
                 }
-                val centered = calibration?.centered(raw) ?: raw
-                AppGraph.runtime.setOrientation(centered)
+                AppGraph.runtime.setOrientation(raw)
                 if (!AppGraph.runtime.sessionPaused.value) {
-                    val output = pipeline?.process(centered) ?: return@collect
+                    val output = pipeline?.process(raw) ?: return@collect
                     AppGraph.runtime.setMotion(output)
-                    val enqueued = GestureDispatcherRegistry.enqueue(output.dx, output.dy, output.processingTimestampNanos, centered)
+                    val enqueued = GestureDispatcherRegistry.enqueue(output.dx, output.dy, output.processingTimestampNanos, raw)
                     if (!enqueued && sampleCount % 100L == 1L) {
                         Log.w(TAG, "sample #$sampleCount: enqueue FAILED (a11y scheduler not attached)")
                     }
@@ -233,11 +230,6 @@ class GyroForegroundService : Service() {
         }
         lastCalibrationSample = raw
         AppGraph.runtime.setOrientation(raw)
-    }
-
-    private fun persistCalibration() {
-        val p = profile ?: return; val updated = p.copy(calibrationConfig = calibration?.asConfig(p.calibrationConfig) ?: p.calibrationConfig)
-        profile = updated; AppGraph.runtime.setProfile(updated); scope.launch { AppGraph.repository.save(updated) }
     }
 
     private fun togglePause() {
@@ -305,10 +297,11 @@ class GyroForegroundService : Service() {
     private fun finishCalibration() {
         if (calibrationPhase == CalibrationPhase.IDLE) {
             if (AppGraph.runtime.sessionPaused.value && AppGraph.runtime.calibrating.value) {
-                Log.w(TAG, "finishCalibration: phase already IDLE but session still paused — forcing unpause")
-                calibration?.reset(); pipeline?.reset()
-                AppGraph.runtime.setCalibrating(false); AppGraph.runtime.setPaused(false)
-                GestureDispatcherRegistry.resume()
+                Log.w(TAG, "finishCalibration: stale callback ignored while phase is IDLE")
+                pipeline?.reset()
+                AppGraph.runtime.setCalibrating(false); AppGraph.runtime.setPaused(true)
+                AppGraph.runtime.setSessionStatus(com.gyrobridge.app.domain.model.SessionStatus.PAUSED)
+                GestureDispatcherRegistry.cancelAll()
                 refreshOverlay(); updateNotification()
             }
             return
@@ -316,9 +309,8 @@ class GyroForegroundService : Service() {
         val recentered = sensorEngine.recenter()
         sensorEngine.unlockReferenceFrame()
         Log.i(TAG, "finishCalibration: recentered=$recentered phase=$calibrationPhase")
-        calibration?.reset(); pipeline?.reset()
+        pipeline?.reset()
         calibrationPhase = CalibrationPhase.ACTIVE
-        if (recentered && sensorEngine.hasReceivedSensorData()) persistCalibration()
         val raw = latestSample
         AppGraph.runtime.setOrientation(
             raw.copy(

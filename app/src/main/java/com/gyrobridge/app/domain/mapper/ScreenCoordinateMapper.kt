@@ -1,6 +1,5 @@
 package com.gyrobridge.app.domain.mapper
 
-import android.view.Surface
 import com.gyrobridge.app.domain.model.DisplayRotation
 import com.gyrobridge.app.domain.model.MovementZone
 import com.gyrobridge.app.domain.model.ScreenZone
@@ -80,36 +79,4 @@ object ScreenCoordinateMapper {
 
     private fun rotationDelta(mapped: DisplayRotation, current: DisplayRotation): Int =
         (current.quarterTurns - mapped.quarterTurns + 4) % 4
-}
-
-object CoordinateMapper {
-    fun normalizedToScreen(nx: Float, ny: Float, width: Int, height: Int): Pair<Float, Float> {
-        return (nx * width) to (ny * height)
-    }
-
-    fun screenToNormalized(sx: Float, sy: Float, width: Int, height: Int): Pair<Float, Float> {
-        if (width <= 0 || height <= 0) return 0f to 0f
-        return (sx / width) to (sy / height)
-    }
-
-    fun rotatedNormalized(nx: Float, ny: Float, displayRotation: Int): Pair<Float, Float> = when (displayRotation) {
-        Surface.ROTATION_90 -> (1f - ny) to nx
-        Surface.ROTATION_180 -> (1f - nx) to (1f - ny)
-        Surface.ROTATION_270 -> ny to (1f - nx)
-        else -> nx to ny
-    }
-
-    fun coerceInZone(x: Float, y: Float, zone: PixelZone): Pair<Float, Float> {
-        return x.coerceIn(zone.left, zone.right) to y.coerceIn(zone.top, zone.bottom)
-    }
-
-    fun distanceToCenter(x: Float, y: Float, zone: PixelZone): Float {
-        val dx = x - zone.centerX; val dy = y - zone.centerY
-        return kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
-    }
-
-    fun isNearBoundary(x: Float, y: Float, zone: PixelZone, marginFraction: Float): Boolean {
-        val mx = zone.widthPx * marginFraction; val my = zone.heightPx * marginFraction
-        return x < zone.left + mx || x > zone.right - mx || y < zone.top + my || y > zone.bottom - my
-    }
 }

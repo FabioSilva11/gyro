@@ -42,4 +42,14 @@ class ProfileJsonCodecTest {
 
         assertEquals(original.physicalMovement, decoded.physicalMovement)
     }
+
+    @Test fun `version four omits obsolete angle offsets and synthetic joystick`() {
+        val json = ProfileJsonCodec.encode(ControlProfile()).toString()
+
+        assertFalse(json.contains("zeroYaw"))
+        assertFalse(json.contains("zeroPitch"))
+        assertFalse(json.contains("zeroRoll"))
+        assertFalse(json.contains("\"joystick\""))
+        assertFalse(json.contains("interactionMode"))
+    }
 }

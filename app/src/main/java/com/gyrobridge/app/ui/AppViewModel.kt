@@ -50,10 +50,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startPreview(profile: ControlProfile = _editingProfile.value ?: ControlProfile()) { if (!runtime.sessionActive.value) previewEngine.start(profile.sensorConfig) }
     fun stopPreview() { if (!runtime.sessionActive.value) previewEngine.stop() }
-    fun calibrateEditingFromPreview() = updateEditing { p ->
-        val s = if (runtime.sessionActive.value) runtime.orientation.value else previewSample.value
-        p.copy(calibrationConfig = p.calibrationConfig.copy(zeroYaw = s.yaw, zeroPitch = s.pitch, zeroRoll = s.roll))
-    }
+    fun calibratePreview() = previewEngine.recenter()
 
     fun exportProfile(context: Context, uri: Uri, profile: ControlProfile) = viewModelScope.launch(Dispatchers.IO) {
         context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(ProfileJsonCodec.encode(profile).toString(2)) }
