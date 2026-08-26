@@ -21,6 +21,7 @@ import com.gyrobridge.app.domain.model.ControlProfile
 import com.gyrobridge.app.gesture.GestureDispatcherRegistry
 import com.gyrobridge.app.overlay.OverlayService
 import com.gyrobridge.app.sensor.MotionPipeline
+import com.gyrobridge.app.sensor.PhysicalMovementSensor
 import com.gyrobridge.app.sensor.SensorCalibration
 import com.gyrobridge.app.sensor.SensorEngine
 import kotlinx.coroutines.CoroutineScope
@@ -39,6 +40,8 @@ private enum class CalibrationPhase { IDLE, WAITING_SENSOR, SETTLING, ACTIVE }
 class GyroForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var sensorEngine: SensorEngine
+    private lateinit var physicalMovementSensor: PhysicalMovementSensor
+    private var sessionController = SessionController()
     private var sampleJob: Job? = null; private var infoJob: Job? = null; private var calibrationJob: Job? = null
     private var profile: ControlProfile? = null; private var pipeline: MotionPipeline? = null; private var calibration: SensorCalibration? = null
     private var autoDetectManager: AutoDetectManager? = null
@@ -51,7 +54,17 @@ class GyroForegroundService : Service() {
     private var lastCalibrationSample = com.gyrobridge.app.sensor.OrientationSample()
     private var a11yConnectionListener: ((com.gyrobridge.app.gesture.ConnectionState) -> Unit)? = null
 
-    override fun onCreate() { super.onCreate(); instance = this; sensorEngine = SensorEngine(this); createChannel(); Log.i(TAG, "onCreate") }
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+        sensorEngine = SensorEngine(this)
+        physicalMovementSensor = PhysicalMovementSensor(this, sensorEngine::projectForwardAcceleration) { output ->
+            AppGraph.runtime.setPhysicalMovementState(output.state)
+            GestureDispatcherRegistry.updateMovement(output.state)
+        }
+        createChannel()
+        Log.i(TAG, "onCreate")
+    }
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -77,11 +90,15 @@ class GyroForegroundService : Service() {
 
     private fun startSession(value: ControlProfile) {
         Log.i(TAG, "startSession: profile=${value.name} a11yAvailable=${GestureDispatcherRegistry.isAvailable()}")
+        sessionController = SessionController()
+        sessionController.onEvent(SessionEvent.Start)
         profile = value.sanitized(); pipeline = MotionPipeline(profile!!); calibration = SensorCalibration(profile!!.calibrationConfig)
         calibrationJob?.cancel(); calibrationPhase = CalibrationPhase.IDLE
         latestSample = com.gyrobridge.app.sensor.OrientationSample(); lastAutoRecenterNanos = System.nanoTime()
         AppGraph.runtime.setProfile(profile); AppGraph.runtime.setSession(true, paused = true); AppGraph.runtime.setCalibrating(false)
-        if (!GestureDispatcherRegistry.isAvailable()) {
+        val accessibilityAvailable = GestureDispatcherRegistry.isAvailable()
+        sessionController.onEvent(SessionEvent.AccessibilityChanged(accessibilityAvailable))
+        if (!accessibilityAvailable) {
             Log.w(TAG, "startSession: AccessibilityService NOT available — gestures will not be dispatched")
             AppGraph.runtime.setA11yAvailable(false)
         } else {
@@ -90,14 +107,33 @@ class GyroForegroundService : Service() {
         GestureDispatcherRegistry.configure(profile!!); GestureDispatcherRegistry.cancelAll()
         a11yConnectionListener?.let { GestureDispatcherRegistry.removeConnectionListener(it) }
         a11yConnectionListener = { state: com.gyrobridge.app.gesture.ConnectionState ->
-            if (state == com.gyrobridge.app.gesture.ConnectionState.DISCONNECTED && AppGraph.runtime.sessionActive.value) {
-                Log.w(TAG, "AccessibilityService disconnected — stopping session")
-                scope.launch { stopSession() }
+            if (AppGraph.runtime.sessionActive.value) {
+                val available = state == com.gyrobridge.app.gesture.ConnectionState.CONNECTED
+                val snapshot = sessionController.onEvent(SessionEvent.AccessibilityChanged(available))
+                AppGraph.runtime.setA11yAvailable(available)
+                AppGraph.runtime.setPaused(true)
+                AppGraph.runtime.setSessionStatus(snapshot.status, snapshot.error)
+                GestureDispatcherRegistry.cancelAll()
+                if (available) profile?.let(GestureDispatcherRegistry::configure)
+                refreshOverlay(); updateNotification()
             }
         }.also { GestureDispatcherRegistry.addConnectionListener(it) }
         startForegroundCompat(notification())
         val sensorStarted = sensorEngine.start(profile!!.sensorConfig)
+        val sensorSnapshot = sessionController.onEvent(SessionEvent.SensorStarted(sensorStarted))
         Log.i(TAG, "startSession: sensorStarted=$sensorStarted")
+        if (!sensorStarted) {
+            AppGraph.runtime.setSessionStatus(sensorSnapshot.status, sensorSnapshot.error)
+            AppGraph.runtime.setPaused(true)
+            updateNotification()
+            return
+        }
+        val movementStarted = physicalMovementSensor.start(profile!!.physicalMovement)
+        if (profile!!.physicalMovement.enabled && !movementStarted) {
+            AppGraph.runtime.setPhysicalMovementState(com.gyrobridge.app.domain.model.PhysicalMovementState.STATIONARY)
+            Log.w(TAG, "Physical movement unavailable; camera remains operational")
+        }
+        AppGraph.runtime.setSessionStatus(sensorSnapshot.status, sensorSnapshot.error)
         sampleJob?.cancel(); sampleCount = 0L; sampleJob = scope.launch {
             sensorEngine.samples.collect { raw ->
                 if (raw.sensorTimestampNanos == 0L) return@collect
@@ -171,6 +207,9 @@ class GyroForegroundService : Service() {
             calibrationStableCount++
         } else {
             calibrationStableCount = 0; calibrationStartNanos = System.nanoTime()
+            lastCalibrationSample = raw
+            AppGraph.runtime.setOrientation(raw)
+            return
         }
         if (calibrationStableCount >= 3 && elapsed >= 300f) {
             Log.i(TAG, "Settling complete: ${"%.0f".format(elapsed)}ms, stable samples=$calibrationStableCount")
@@ -192,12 +231,35 @@ class GyroForegroundService : Service() {
         val resuming = AppGraph.runtime.sessionPaused.value
         Log.i(TAG, "togglePause: resuming=$resuming")
         if (resuming) {
-            beginCalibration()
+            val autoCalibrate = profile?.calibrationConfig?.autoCalibrate == true
+            if (sensorEngine.hasReference()) sessionController.onEvent(SessionEvent.CalibrationCaptured)
+            val decision = sessionController.onEvent(SessionEvent.ExplicitResume(autoCalibrate))
+            if (!decision.accessibilityAvailable) {
+                AppGraph.runtime.setPaused(true)
+                AppGraph.runtime.setSessionStatus(decision.status, decision.error)
+                refreshOverlay(); updateNotification()
+                return
+            }
+            physicalMovementSensor.start(profile?.physicalMovement ?: return)
+            if (autoCalibrate) beginCalibration()
+            else if (!sensorEngine.hasReference()) {
+                AppGraph.runtime.setPaused(true)
+                AppGraph.runtime.setSessionStatus(com.gyrobridge.app.domain.model.SessionStatus.PAUSED)
+                refreshOverlay(); updateNotification()
+            }
+            else {
+                AppGraph.runtime.setCalibrating(false); AppGraph.runtime.setPaused(false)
+                AppGraph.runtime.setSessionStatus(decision.status, decision.error)
+                GestureDispatcherRegistry.resume(); refreshOverlay(); updateNotification()
+            }
         } else {
+            val decision = sessionController.onEvent(SessionEvent.Pause)
             calibrationJob?.cancel(); calibrationPhase = CalibrationPhase.IDLE
             AppGraph.runtime.setCalibrating(false); AppGraph.runtime.setPaused(true)
             sensorEngine.unlockReferenceFrame()
             GestureDispatcherRegistry.cancelAll()
+            physicalMovementSensor.stop()
+            AppGraph.runtime.setSessionStatus(decision.status, decision.error)
             refreshOverlay(); updateNotification()
         }
     }
@@ -210,6 +272,7 @@ class GyroForegroundService : Service() {
         }
         Log.i(TAG, "beginCalibration")
         AppGraph.runtime.setPaused(true); AppGraph.runtime.setCalibrating(true)
+        AppGraph.runtime.setSessionStatus(com.gyrobridge.app.domain.model.SessionStatus.CALIBRATING)
         calibrationPhase = CalibrationPhase.WAITING_SENSOR
         calibrationStableCount = 0; calibrationStartNanos = 0L
         pipeline?.reset()
@@ -238,6 +301,7 @@ class GyroForegroundService : Service() {
             return
         }
         val recentered = sensorEngine.recenter()
+        sensorEngine.unlockReferenceFrame()
         Log.i(TAG, "finishCalibration: recentered=$recentered phase=$calibrationPhase")
         calibration?.reset(); pipeline?.reset()
         calibrationPhase = CalibrationPhase.ACTIVE
@@ -251,8 +315,16 @@ class GyroForegroundService : Service() {
                 processingTimestampNanos = System.nanoTime(),
             ),
         )
+        val decision = if (recentered) sessionController.onEvent(SessionEvent.CalibrationCaptured)
+        else sessionController.onEvent(SessionEvent.Failure(com.gyrobridge.app.domain.model.SessionError.SENSOR_START_FAILED))
         AppGraph.runtime.setCalibrating(false); calibrationPhase = CalibrationPhase.IDLE
-        AppGraph.runtime.setPaused(false)
+        AppGraph.runtime.setPaused(decision.status != com.gyrobridge.app.domain.model.SessionStatus.ACTIVE)
+        AppGraph.runtime.setSessionStatus(decision.status, decision.error)
+        if (decision.status != com.gyrobridge.app.domain.model.SessionStatus.ACTIVE) {
+            GestureDispatcherRegistry.cancelAll()
+            refreshOverlay(); updateNotification()
+            return
+        }
         GestureDispatcherRegistry.resume()
         refreshOverlay(); updateNotification()
     }
@@ -266,13 +338,13 @@ class GyroForegroundService : Service() {
     private fun stopSession() {
         Log.i(TAG, "stopSession")
         a11yConnectionListener?.let { GestureDispatcherRegistry.removeConnectionListener(it); a11yConnectionListener = null }
-        calibrationJob?.cancel(); sampleJob?.cancel(); infoJob?.cancel(); sensorEngine.stop(); GestureDispatcherRegistry.cancelAll()
+        calibrationJob?.cancel(); sampleJob?.cancel(); infoJob?.cancel(); sensorEngine.stop(); physicalMovementSensor.stop(); GestureDispatcherRegistry.cancelAll()
         autoDetectManager?.stop(); autoDetectManager = null
         OverlayService.stop(this); AppGraph.runtime.reset(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) { if (!AppGraph.runtime.sessionActive.value) stopSelf(); super.onTaskRemoved(rootIntent) }
-    override fun onDestroy() { Log.w(TAG, "onDestroy"); instance = null; a11yConnectionListener?.let { GestureDispatcherRegistry.removeConnectionListener(it) }; sensorEngine.stop(); autoDetectManager?.stop(); autoDetectManager = null; calibrationJob?.cancel(); sampleJob?.cancel(); infoJob?.cancel(); if (AppGraph.runtime.sessionActive.value) AppGraph.runtime.reset(); scope.cancel(); super.onDestroy() }
+    override fun onDestroy() { Log.w(TAG, "onDestroy"); instance = null; a11yConnectionListener?.let { GestureDispatcherRegistry.removeConnectionListener(it) }; sensorEngine.stop(); physicalMovementSensor.stop(); autoDetectManager?.stop(); autoDetectManager = null; calibrationJob?.cancel(); sampleJob?.cancel(); infoJob?.cancel(); if (AppGraph.runtime.sessionActive.value) AppGraph.runtime.reset(); scope.cancel(); super.onDestroy() }
 
     private fun notification(): Notification {
         val p = profile; val sensor = AppGraph.runtime.sensorInfo.value; val paused = AppGraph.runtime.sessionPaused.value; val calibrating = AppGraph.runtime.calibrating.value

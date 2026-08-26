@@ -102,6 +102,11 @@ class SensorEngine(private val context: Context) : SensorEventListener {
         Log.i(TAG, "unlockReferenceFrame")
     }
 
+    fun hasReference(): Boolean = processor.hasReference()
+
+    fun projectForwardAcceleration(deviceVector: FloatArray): Float? =
+        processor.projectForwardAcceleration(deviceVector)
+
     fun hasReceivedSensorData(): Boolean = processor.hasReceivedData()
 
     fun stop() {

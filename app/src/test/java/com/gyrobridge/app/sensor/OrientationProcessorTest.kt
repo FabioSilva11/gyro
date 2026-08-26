@@ -36,4 +36,26 @@ class OrientationProcessorTest {
 
         assertTrue(processor.hasReference())
     }
+
+    @Test fun `linear acceleration is projected into calibrated forward axis`() {
+        val processor = OrientationProcessor()
+        val identity = floatArrayOf(1f,0f,0f,0f,1f,0f,0f,0f,1f)
+        processor.setCurrentMatrixForTest(identity)
+        assertTrue(processor.captureReference())
+
+        assertEquals(2f, processor.projectForwardAcceleration(floatArrayOf(0f, 0f, -2f))!!, .001f)
+        assertEquals(-2f, processor.projectForwardAcceleration(floatArrayOf(0f, 0f, 2f))!!, .001f)
+    }
+
+    @Test fun `forward projection follows captured reference after device yaw`() {
+        val processor = OrientationProcessor()
+        val identity = floatArrayOf(1f,0f,0f,0f,1f,0f,0f,0f,1f)
+        val yaw90 = floatArrayOf(0f,0f,1f,0f,1f,0f,-1f,0f,0f)
+        processor.setCurrentMatrixForTest(identity)
+        assertTrue(processor.captureReference())
+        processor.setCurrentMatrixForTest(yaw90)
+
+        assertEquals(0f, processor.projectForwardAcceleration(floatArrayOf(0f, 0f, -2f))!!, .001f)
+        assertEquals(2f, processor.projectForwardAcceleration(floatArrayOf(2f, 0f, 0f))!!, .001f)
+    }
 }

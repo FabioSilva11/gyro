@@ -109,6 +109,16 @@ class OrientationProcessor {
     @Synchronized
     fun hasReference(): Boolean = hasReference
 
+    @Synchronized
+    fun projectForwardAcceleration(deviceVector: FloatArray): Float? {
+        if (deviceVector.size < 3 || !hasCurrentMatrix || !hasReference) return null
+        multiplyTransposeLeft(referenceMatrix, currentMatrix, relativeMatrix)
+        val referenceZ = relativeMatrix[6] * deviceVector[0] +
+            relativeMatrix[7] * deviceVector[1] +
+            relativeMatrix[8] * deviceVector[2]
+        return -referenceZ
+    }
+
     internal fun setCurrentMatrixForTest(matrix: FloatArray) {
         require(matrix.size >= 9)
         matrix.copyInto(currentMatrix, endIndex = 9)
